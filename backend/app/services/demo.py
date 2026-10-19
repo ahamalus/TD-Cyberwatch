@@ -43,12 +43,12 @@ def create_demo_tenant(db: Session) -> str:
         return "Demo tenant already exists (slug demo-organisation)."
     now = utcnow()
     t = Tenant(name="Demo Organisation (synthetic data)", slug="demo-organisation", is_demo=True,
-               contact_email="demo@example.invalid")
+               contact_email="demo@demo.example.com")
     db.add(t)
     db.flush()
-    user = db.execute(select(User).where(User.email == "demo@example.invalid")).scalar_one_or_none()
+    user = db.execute(select(User).where(User.email == "demo@demo.example.com")).scalar_one_or_none()
     if user is None:
-        user = User(email="demo@example.invalid", full_name="Demo User", password_hash=hash_password(DEMO_PASSWORD),
+        user = User(email="demo@demo.example.com", full_name="Demo User", password_hash=hash_password(DEMO_PASSWORD),
                     email_verified_at=now)
         db.add(user)
         db.flush()
@@ -108,4 +108,4 @@ def create_demo_tenant(db: Session) -> str:
                 severity="medium", confidence="high", detection_source="tls_check", rule_key="tls:expiring",
                 dedupe_key=f"demo:{w.id}:tls", recommended_action="Renew the certificate.",
                 requires_human_verification=False, is_demo=True))
-    return f"Created demo tenant {t.id}. Sign in as demo@example.invalid / {DEMO_PASSWORD} (development only)."
+    return f"Created demo tenant {t.id}. Sign in as demo@demo.example.com / {DEMO_PASSWORD} (development only)."
