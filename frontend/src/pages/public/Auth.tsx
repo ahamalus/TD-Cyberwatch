@@ -60,6 +60,11 @@ function FormError({ error }: { error: string | null }) {
   ) : null;
 }
 
+/** Only same-origin relative paths; rejects //host, /\host and control characters. */
+export function isSafeRedirect(next: string | null): boolean {
+  return !!next && next.startsWith("/") && !next.startsWith("//") && !/[\\\u0000-\u001f]/.test(next);
+}
+
 function landingFor(me: Me): string {
   if (me.memberships.length) return `/app/${me.memberships[0].tenant_id}/overview`;
   if (me.is_platform_staff) return me.platform_mfa_required ? "/staff/security" : "/admin";
@@ -81,7 +86,7 @@ export function LoginPage() {
   const finish = (me: Me) => {
     qc.setQueryData(["me"], me);
     const next = params.get("next");
-    navigate(next && next.startsWith("/") && !next.startsWith("//") ? next : landingFor(me), { replace: true });
+    navigate(isSafeRedirect(next) ? next! : landingFor(me), { replace: true });
   };
 
   const submit = async (e: FormEvent) => {

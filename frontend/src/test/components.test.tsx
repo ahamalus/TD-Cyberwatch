@@ -132,3 +132,14 @@ describe("login journey", () => {
     expect(getHeaders["X-CSRF-Token"]).toBeUndefined();
   });
 });
+
+describe("post-login redirect", () => {
+  it("only allows same-origin paths", async () => {
+    const { isSafeRedirect } = await import("../pages/public/Auth");
+    expect(isSafeRedirect("/app/x/overview")).toBe(true);
+    expect(isSafeRedirect("//evil.example.com")).toBe(false);
+    expect(isSafeRedirect("/\\evil.example.com")).toBe(false);
+    expect(isSafeRedirect("https://evil.example.com")).toBe(false);
+    expect(isSafeRedirect(null)).toBe(false);
+  });
+});
