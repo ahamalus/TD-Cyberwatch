@@ -77,6 +77,7 @@ cd frontend && npm test && npm run typecheck
 | Architecture, decisions, Phase 0 assessment | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
 | Build status and continuation plan | [docs/BUILD_STATUS.md](docs/BUILD_STATUS.md) |
 | Development and migrations | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) |
+| Deploy to cyberwatch.trustdata.ng (runbook) | [docs/DEPLOY_CYBERWATCH_TRUSTDATA_NG.md](docs/DEPLOY_CYBERWATCH_TRUSTDATA_NG.md) |
 | Production deployment, TLS, backup/restore, upgrade/rollback, Windows/Hyper-V pilot | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) |
 | Security model, threat model, hardening checklist | [docs/SECURITY.md](docs/SECURITY.md) |
 | Hosting connector setup and verification | [docs/CONNECTORS.md](docs/CONNECTORS.md) |

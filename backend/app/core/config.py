@@ -96,6 +96,16 @@ class Settings(BaseSettings):
     # Bootstrap administrator (only consumed by the bootstrap CLI command)
     bootstrap_admin_email: str | None = None
 
+    @field_validator("cookie_domain", "smtp_host", "smtp_username", "whatsapp_phone_number_id", mode="before")
+    @classmethod
+    def _blank_to_none(cls, v: object) -> object:
+        return None if isinstance(v, str) and not v.strip() else v
+
+    @field_validator("smtp_password", "whatsapp_access_token", "paystack_secret_key", mode="before")
+    @classmethod
+    def _blank_secret_to_none(cls, v: object) -> object:
+        return None if isinstance(v, str) and not v.strip() else v
+
     @field_validator("outbound_allow_cidrs")
     @classmethod
     def _valid_cidrs(cls, v: list[str]) -> list[str]:

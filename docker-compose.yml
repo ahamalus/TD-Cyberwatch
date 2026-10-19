@@ -58,6 +58,9 @@ services:
     depends_on:
       migrate: { condition: service_completed_successfully }
     volumes: ["storage:/var/lib/cyberwatch/storage"]
+    # Egress needed for Paystack verification and website ownership checks
+    # (all outbound requests still pass the SSRF policy).
+    networks: [internal, egress]
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:8000/api/v1/health/ready')"]
       interval: 30s

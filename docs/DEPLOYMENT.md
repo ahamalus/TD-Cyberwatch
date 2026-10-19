@@ -1,5 +1,9 @@
 # Deployment guide
 
+> For the TrustData production pilot at **https://cyberwatch.trustdata.ng**, follow
+> [DEPLOY_CYBERWATCH_TRUSTDATA_NG.md](DEPLOY_CYBERWATCH_TRUSTDATA_NG.md) (automatic HTTPS via Caddy,
+> one-command server bootstrap). This document covers the general options.
+
 ## 1. Where to run CyberWatch
 
 **Recommendation: a dedicated Linux VPS (Ubuntu 24.04 LTS) for production**, not the shared
