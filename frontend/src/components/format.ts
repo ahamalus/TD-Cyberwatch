@@ -35,7 +35,7 @@ export function fmtMoney(minor?: number | null, currency = "NGN"): string {
   return new Intl.NumberFormat("en-NG", { style: "currency", currency, maximumFractionDigits: 0 }).format(minor / 100);
 }
 
-const ACRONYMS = new Set(["tls", "sftp", "ssh", "api", "http", "https", "php", "dns", "uapi", "csv", "pdf", "mfa", "ip", "url", "soc", "whm"]);
+const ACRONYMS = new Set(["tls", "sftp", "ssh", "api", "http", "https", "php", "dns", "uapi", "csv", "pdf", "mfa", "ip", "url", "soc", "whm", "tcp"]);
 
 export function humanize(s?: string | null): string {
   if (!s) return "—";

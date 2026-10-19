@@ -41,7 +41,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { useCan, useTenant, useTenantId } from "../../api/auth";
 import { api, errorMessage } from "../../api/client";
 import type { ConnectorInfo, HostingAccount } from "../../api/types";
-import { fmtDateTime, fmtRelative } from "../../components/format";
+import { fmtDateTime, fmtRelative, humanize } from "../../components/format";
 import { CapabilityBadge, ConnectionBadge } from "../../components/status";
 import { ConfirmButton, EmptyState, ErrorState, KeyValue, LoadingBlock, PageHeader, Section } from "../../components/ui";
 
@@ -369,8 +369,8 @@ export function HostingDetailPage() {
                         {d.ok ? <IconCheck size={13} /> : <IconX size={13} />}
                       </ThemeIcon>
                       <Box>
-                        <Text size="sm" fw={600} tt="capitalize">
-                          {d.step.replace(/_/g, " ")}
+                        <Text size="sm" fw={600}>
+                          {humanize(d.step)}
                         </Text>
                         <Text size="xs" c="dimmed">
                           {d.message}
