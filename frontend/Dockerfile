@@ -1,8 +1,12 @@
+# syntax=docker/dockerfile:1
 # Build the SPA, then serve it (and proxy /api) with an unprivileged nginx.
 FROM node:22-bookworm-slim AS build
 WORKDIR /src
 COPY package.json package-lock.json ./
-RUN npm ci --no-audit --no-fund
+# Optional extra CA for TLS-intercepting proxies (see backend/Dockerfile).
+RUN --mount=type=secret,id=extra_ca \
+    if [ -s /run/secrets/extra_ca ]; then export NODE_EXTRA_CA_CERTS=/run/secrets/extra_ca; fi; \
+    npm ci --no-audit --no-fund
 COPY . .
 RUN npm run build
 
