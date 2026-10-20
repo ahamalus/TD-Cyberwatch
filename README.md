@@ -37,6 +37,16 @@ docs/       Architecture, security, deployment, connectors, integrations, build 
 docker-compose.yml, .env.example
 ```
 
+## Try it on your computer (Docker Desktop)
+
+```bash
+./start-local.sh                                            # macOS / Linux
+powershell -ExecutionPolicy Bypass -File .\start-local.ps1  # Windows
+```
+
+Starts the full platform with a sample website, a read-only sample SFTP server and a local email inbox, and
+`simulate-attack` lets you watch a fake web shell get detected. See [docs/LOCAL_TESTING.md](docs/LOCAL_TESTING.md).
+
 ## Quick start (development)
 
 Requirements: Python 3.12+, Node 20+, PostgreSQL 16, Redis 7.
@@ -77,6 +87,7 @@ cd frontend && npm test && npm run typecheck
 | Architecture, decisions, Phase 0 assessment | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
 | Build status and continuation plan | [docs/BUILD_STATUS.md](docs/BUILD_STATUS.md) |
 | Development and migrations | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) |
+| Test locally with Docker Desktop (sample site, attack simulation) | [docs/LOCAL_TESTING.md](docs/LOCAL_TESTING.md) |
 | Deploy to cyberwatch.trustdata.ng (runbook) | [docs/DEPLOY_CYBERWATCH_TRUSTDATA_NG.md](docs/DEPLOY_CYBERWATCH_TRUSTDATA_NG.md) |
 | Production deployment, TLS, backup/restore, upgrade/rollback, Windows/Hyper-V pilot | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) |
 | Security model, threat model, hardening checklist | [docs/SECURITY.md](docs/SECURITY.md) |

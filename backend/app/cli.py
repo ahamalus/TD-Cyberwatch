@@ -2,6 +2,7 @@
 
     python -m app.cli seed                      # reference data (roles, connectors, plans)
     python -m app.cli create-admin EMAIL NAME   # first platform administrator
+                                                # (password prompted, or CW_ADMIN_PASSWORD)
     python -m app.cli generate-key [KEY_ID]     # new credential-encryption key entry
     python -m app.cli rotate-credentials        # re-encrypt secrets with the primary key
     python -m app.cli report-backup STATUS PATH # record backup outcome (used by backup script)
@@ -12,6 +13,7 @@
 from __future__ import annotations
 
 import getpass
+import os
 import sys
 
 from sqlalchemy import select
@@ -35,7 +37,8 @@ def cmd_seed(force: bool = False) -> None:
 
 def cmd_create_admin(email: str, name: str) -> None:
     email = email.strip().lower()
-    password = getpass.getpass("Password for the administrator: ")
+    # Non-interactive setups (e.g. the local test kit) may pass the password in the environment.
+    password = os.environ.get("CW_ADMIN_PASSWORD") or getpass.getpass("Password for the administrator: ")
     problems = password_problems(password, email)
     if problems:
         sys.exit("; ".join(problems))

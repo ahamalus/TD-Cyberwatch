@@ -17,7 +17,8 @@ Last updated: 2026-10-19 (session 1). Statuses: **Not Started · In Progress · 
 | Live stack smoke test | API + Celery worker + beat + Redis + PostgreSQL + SFTP server | Connection test, capability discovery, baseline scan, detection of an injected `uploads/evil.php` (high-severity incident) all succeeded through the real queue |
 | UI smoke (Chromium/Playwright) | 23 screens desktop + mobile, customer/admin/ops | All rendered against the real API with demo data; 0 console errors after fixes |
 | Migrations | `alembic upgrade head` / `downgrade base` / `upgrade head` | Succeeded |
-| Docker images | `docker compose config` | Valid. **Images not built**: Docker daemon cannot run in the build sandbox |
+| Docker images | `docker build` backend + web; `docker compose up` (base + `docker-compose.local.yml`) | Both images build; full stack of 11 containers starts healthy |
+| Local test kit | `start-local.sh` and `start-local.ps1` (PowerShell 7) on a clean volume set | `.env` generated, migrations + seed, admin created; through nginx: SFTP connection test, availability *up*, 6-file baseline, `simulate-attack` → 3 changes + High incident, alert email delivered to Mailpit; customer and admin browser sign-in with 0 console errors |
 
 ## Feature status
 

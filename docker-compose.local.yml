@@ -1,0 +1,56 @@
+# TrustData CyberWatch: local test kit (laptop or desktop with Docker Desktop).
+# Use it through start-local.sh / start-local.ps1, which run:
+#   docker compose -f docker-compose.yml -f docker-compose.local.yml up -d --build
+#
+# Adds, on the private "internal" network only:
+#   sample-sftp  read-only SFTP server publishing deploy/local/sample-site (sftp.cyberwatch.test:2222)
+#   sample-web   the same sample website over HTTP (http://site.cyberwatch.test:8080/)
+#   mailpit      catches every email CyberWatch sends; inbox at http://localhost:8025
+# Never use this file on a server.
+
+services:
+  sample-sftp:
+    image: trustdata/cyberwatch-backend:${CW_VERSION:-local}
+    command: ["python", "/opt/sample/sample_sftp_server.py"]
+    environment:
+      SAMPLE_ROOT: /srv/sample-site
+      SAMPLE_SFTP_USER: sampleuser
+      SAMPLE_SFTP_PASSWORD: ${SAMPLE_SFTP_PASSWORD:?run start-local to generate .env}
+    volumes:
+      - ./deploy/local/sample_sftp_server.py:/opt/sample/sample_sftp_server.py:ro
+      - ./deploy/local/sample-site:/srv/sample-site:ro
+      - sample-sftp-key:/var/lib/cyberwatch/storage
+    restart: unless-stopped
+    read_only: true
+    tmpfs: ["/tmp"]
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    networks:
+      internal:
+        aliases: [sftp.cyberwatch.test]
+
+  sample-web:
+    image: nginxinc/nginx-unprivileged:1.27-alpine
+    volumes:
+      - ./deploy/local/sample-site/public_html:/usr/share/nginx/html:ro
+    restart: unless-stopped
+    read_only: true
+    tmpfs: ["/tmp", "/var/cache/nginx"]
+    security_opt: ["no-new-privileges:true"]
+    networks:
+      internal:
+        aliases: [site.cyberwatch.test]
+
+  mailpit:
+    image: axllent/mailpit:v1.21
+    ports: ["127.0.0.1:${CW_MAILPIT_PORT:-8025}:8025"]
+    restart: unless-stopped
+    networks: [internal, public]
+
+  worker-notifications:
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      mailpit: { condition: service_started }
+
+volumes:
+  sample-sftp-key: {}
