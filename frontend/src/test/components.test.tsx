@@ -6,7 +6,7 @@ import type { ReactNode } from "react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError, errorMessage } from "../api/client";
-import { humanize } from "../components/format";
+import { humanize, minCharsHint } from "../components/format";
 import { CapabilityBadge, HealthBadge, ScanBadge, SeverityBadge } from "../components/status";
 import { DataTable, ErrorState } from "../components/ui";
 import { theme } from "../design/theme";
@@ -141,5 +141,14 @@ describe("post-login redirect", () => {
     expect(isSafeRedirect("/\\evil.example.com")).toBe(false);
     expect(isSafeRedirect("https://evil.example.com")).toBe(false);
     expect(isSafeRedirect(null)).toBe(false);
+  });
+});
+
+describe("minCharsHint", () => {
+  it("shows progress until the minimum is met, then only the help text", () => {
+    expect(minCharsHint("uearqe", 10, "Why access is needed.")).toBe("Why access is needed. At least 10 characters (6/10).");
+    expect(minCharsHint("   ", 5)).toBe("At least 5 characters (0/5).");
+    expect(minCharsHint("Ticket 4821 follow-up", 10, "Why access is needed.")).toBe("Why access is needed.");
+    expect(minCharsHint("long enough", 5)).toBeUndefined();
   });
 });

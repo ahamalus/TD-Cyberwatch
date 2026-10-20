@@ -51,3 +51,10 @@ export function fmtNumber(n?: number | null): string {
 export function shortHash(h?: string | null): string {
   return h ? `${h.slice(0, 12)}…` : "—";
 }
+
+/** Field description that shows a minimum-length rule, with live progress until it is met. */
+export function minCharsHint(value: string, min: number, help?: string): string | undefined {
+  const n = value.trim().length;
+  const rule = n < min ? `At least ${min} characters (${n}/${min}).` : "";
+  return [help, rule].filter(Boolean).join(" ") || undefined;
+}

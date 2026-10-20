@@ -22,7 +22,7 @@ import { Link } from "react-router-dom";
 import { usePlatformCan } from "../../api/auth";
 import { api, errorMessage } from "../../api/client";
 import type { Job, Page } from "../../api/types";
-import { fmtBytes, fmtDateTime, fmtRelative, humanize } from "../../components/format";
+import { fmtBytes, fmtDateTime, fmtRelative, humanize, minCharsHint } from "../../components/format";
 import { HealthBadge, IncidentStatusBadge, ScanBadge, SeverityBadge } from "../../components/status";
 import { DataTable, EmptyState, ErrorState, KeyValue, LoadingBlock, PageHeader, Section, StatCard } from "../../components/ui";
 
@@ -201,10 +201,10 @@ export function OpsIncidentsPage() {
       </Card>
       <Modal opened={!!action} onClose={() => setAction(null)} title={`Record response action · ${action?.ref}`}>
         <Stack>
-          <TextInput label="Action" placeholder="e.g. Contacted customer security lead" value={form.action} onChange={(e) => setForm({ ...form, action: e.currentTarget.value })} />
-          <Textarea label="Notes" autosize minRows={3} value={form.note} onChange={(e) => setForm({ ...form, note: e.currentTarget.value })} />
+          <TextInput label="Action" description={minCharsHint(form.action, 3)} placeholder="e.g. Contacted customer security lead" value={form.action} onChange={(e) => setForm({ ...form, action: e.currentTarget.value })} />
+          <Textarea label="Notes" description={minCharsHint(form.note, 3)} autosize minRows={3} value={form.note} onChange={(e) => setForm({ ...form, note: e.currentTarget.value })} />
           <Text size="xs" c="dimmed">Recorded as a manual action in the tamper-evident incident history. Actions that change customer systems require recorded customer approval.</Text>
-          <Button onClick={() => record.mutate()} loading={record.isPending} disabled={form.action.length < 3 || form.note.length < 3}>Record</Button>
+          <Button onClick={() => record.mutate()} loading={record.isPending} disabled={form.action.trim().length < 3 || form.note.trim().length < 3}>Record</Button>
         </Stack>
       </Modal>
     </>

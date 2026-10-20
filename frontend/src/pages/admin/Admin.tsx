@@ -33,11 +33,11 @@ import {
 } from "@tabler/icons-react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useState } from "react";
-import { usePlatformCan } from "../../api/auth";
+import { useMe, usePlatformCan } from "../../api/auth";
 import { api, errorMessage } from "../../api/client";
 import type { Page } from "../../api/types";
 import { SERIES_COLORS, StackedBars } from "../../components/charts";
-import { fmtDateTime, fmtMoney, fmtRelative, humanize } from "../../components/format";
+import { fmtDateTime, fmtMoney, fmtRelative, humanize, minCharsHint } from "../../components/format";
 import { HealthBadge, SeverityBadge } from "../../components/status";
 import { ConfirmButton, DataTable, EmptyState, ErrorState, KeyValue, LoadingBlock, PageHeader, SearchInput, Section, StatCard } from "../../components/ui";
 
@@ -154,7 +154,7 @@ export function CustomersPage() {
       <Modal opened={!!target} onClose={() => setTarget(null)} title={`Change status: ${target?.name}`}>
         <Stack>
           <Select label="New status" data={["active", "suspended", "deactivated"].map((v) => ({ value: v, label: humanize(v) }))} value={newStatus} onChange={(v) => setNewStatus(v ?? "suspended")} />
-          <Textarea label="Reason (recorded in the audit trail)" required value={reason} onChange={(e) => setReason(e.currentTarget.value)} />
+          <Textarea label="Reason (recorded in the audit trail)" required description={minCharsHint(reason, 5)} value={reason} onChange={(e) => setReason(e.currentTarget.value)} />
           <Alert color="amber" variant="light">Customer data is retained. Suspended organisations are read-only and monitoring pauses; deactivated organisations cannot sign in.</Alert>
           <Button color={newStatus === "active" ? "cyber" : "threat"} disabled={reason.length < 5} loading={change.isPending} onClick={() => change.mutate()}>Confirm change</Button>
         </Stack>
@@ -421,10 +421,31 @@ export function ManagedServicesPage() {
   const can = usePlatformCan();
   const grants = useQuery({ queryKey: ["admin-grants"], queryFn: () => api.get<any[]>("/admin/grants") }); // eslint-disable-line @typescript-eslint/no-explicit-any
   const tenants = useQuery({ queryKey: ["admin-tenant-options"], queryFn: () => api.get<Page<{ id: string; name: string }>>("/admin/tenants", { page_size: 200 }), enabled: can("platform:tenants:read") });
-  const [form, setForm] = useState({ tenant_id: "", permissions: ["tenant:read", "websites:read", "monitoring:read", "incidents:read"], reason: "", duration_hours: 72, customer_approval_reference: "" });
+  const me = useMe();
+  const staff = useQuery({
+    queryKey: ["admin-staff"],
+    queryFn: () => api.get<{ id: string; email: string; full_name: string; is_active: boolean }[]>("/admin/staff"),
+    enabled: can("platform:users:manage"),
+  });
+  const [form, setForm] = useState({ tenant_id: "", grantee_user_id: "", permissions: ["tenant:read", "websites:read", "monitoring:read", "incidents:read"], reason: "", duration_hours: 72, customer_approval_reference: "" });
+  const myId = me.data?.id ?? "";
+  const grantee = form.grantee_user_id || myId;
+  // The API refuses an administrator activating access for themselves; say so before submitting.
+  const selfIssue = !!form.customer_approval_reference.trim() && grantee === myId;
   const request = useMutation({
-    mutationFn: () => api.post("/admin/grants", { ...form, customer_approval_reference: form.customer_approval_reference || null }),
-    onSuccess: () => { grants.refetch(); notifications.show({ color: "secure", title: "Request recorded", message: "The customer must approve the request before access is granted." }); },
+    mutationFn: () =>
+      api.post("/admin/grants", {
+        ...form,
+        grantee_user_id: form.grantee_user_id || null,
+        customer_approval_reference: form.customer_approval_reference.trim() || null,
+      }),
+    onSuccess: (g: any) => { // eslint-disable-line @typescript-eslint/no-explicit-any
+      grants.refetch();
+      setForm((f) => ({ ...f, reason: "", customer_approval_reference: "" }));
+      notifications.show(g?.status === "active"
+        ? { color: "secure", title: "Grant active", message: "Access was activated with the approval reference. Open the workspace from the Grants list." }
+        : { color: "secure", title: "Request recorded", message: "The customer must approve the request before access is granted." });
+    },
     onError,
   });
   const PERMS = ["tenant:read", "members:read", "websites:read", "hosting:read", "monitoring:read", "inventory:read", "incidents:read", "incidents:manage", "notifications:read", "reports:read", "reports:generate", "support:read", "support:manage", "scans:run", "monitoring:manage"];
@@ -440,11 +461,28 @@ export function ManagedServicesPage() {
               ) : (
                 <TextInput label="Customer organisation ID" value={form.tenant_id} onChange={(e) => setForm({ ...form, tenant_id: e.currentTarget.value })} />
               )}
+              {staff.data && (
+                <Select
+                  label="Staff member who will receive access"
+                  data={staff.data.filter((u) => u.is_active).map((u) => ({ value: u.id, label: `${u.full_name} (${u.email})${u.id === myId ? " - you" : ""}` }))}
+                  value={grantee || null}
+                  onChange={(v) => setForm({ ...form, grantee_user_id: v ?? "" })}
+                />
+              )}
               <MultiSelect label="Access requested" data={PERMS} value={form.permissions} onChange={(v) => setForm({ ...form, permissions: v })} />
-              <Textarea label="Reason" required value={form.reason} onChange={(e) => setForm({ ...form, reason: e.currentTarget.value })} />
+              <Textarea label="Reason" required description={minCharsHint(form.reason, 10, "Why access is needed, e.g. the support ticket number.")} value={form.reason} onChange={(e) => setForm({ ...form, reason: e.currentTarget.value })} />
               <NumberInput label="Duration (hours)" min={1} max={2160} value={form.duration_hours} onChange={(v) => setForm({ ...form, duration_hours: Number(v) || 72 })} />
-              {can("grants:issue") && <TextInput label="Customer approval reference (administrators only)" description="Activates the grant immediately. Use only with a signed managed-service order or written approval." value={form.customer_approval_reference} onChange={(e) => setForm({ ...form, customer_approval_reference: e.currentTarget.value })} />}
-              <Button onClick={() => request.mutate()} loading={request.isPending} disabled={!form.tenant_id || form.reason.length < 10}>Submit request</Button>
+              {can("grants:issue") && (
+                <TextInput
+                  label="Customer approval reference (administrators only)"
+                  description="Optional. The number of the customer's signed managed-service order or written approval, e.g. MSO-2026-014. Filling it in activates the grant immediately; leave it empty to send a request for the customer to approve."
+                  placeholder="e.g. MSO-2026-014"
+                  error={selfIssue ? "You cannot activate access for yourself. Choose another staff member above, or leave this empty and ask another administrator to approve." : undefined}
+                  value={form.customer_approval_reference}
+                  onChange={(e) => setForm({ ...form, customer_approval_reference: e.currentTarget.value })}
+                />
+              )}
+              <Button onClick={() => request.mutate()} loading={request.isPending} disabled={!form.tenant_id || form.reason.trim().length < 10 || form.permissions.length === 0 || selfIssue}>Submit request</Button>
             </Stack>
           </Section>
         </Grid.Col>

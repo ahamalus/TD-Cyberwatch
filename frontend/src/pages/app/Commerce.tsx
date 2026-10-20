@@ -27,7 +27,7 @@ import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom"
 import { useCan, useTenantId } from "../../api/auth";
 import { api, downloadUrl, errorMessage } from "../../api/client";
 import type { Page, Website } from "../../api/types";
-import { fmtBytes, fmtDate, fmtDateTime, fmtMoney, humanize, shortHash } from "../../components/format";
+import { fmtBytes, fmtDate, fmtDateTime, fmtMoney, humanize, minCharsHint, shortHash } from "../../components/format";
 import { SubscriptionBadge } from "../../components/status";
 import { ConfirmButton, DataTable, EmptyState, ErrorState, KeyValue, LoadingBlock, PageHeader, Section } from "../../components/ui";
 
@@ -374,8 +374,8 @@ export function TicketPage() {
               <Alert color="secure" variant="light" title={`Approved ${fmtDateTime(d.remediation_approved_at)}`}>{d.remediation_scope}</Alert>
             ) : can("managed_service:approve") ? (
               <Stack>
-                <Textarea label="Approved scope" description="Describe exactly what may be changed." autosize minRows={3} value={scope} onChange={(e) => setScope(e.currentTarget.value)} />
-                <ConfirmButton title="Approve remediation?" message="This authorises Trust Data to perform the described actions. Your approval is permanently recorded in the audit trail." confirmLabel="Approve" disabled={scope.length < 10} onConfirm={() => approve.mutateAsync()}>Record approval</ConfirmButton>
+                <Textarea label="Approved scope" description={minCharsHint(scope, 10, "Describe exactly what may be changed.")} autosize minRows={3} value={scope} onChange={(e) => setScope(e.currentTarget.value)} />
+                <ConfirmButton title="Approve remediation?" message="This authorises Trust Data to perform the described actions. Your approval is permanently recorded in the audit trail." confirmLabel="Approve" disabled={scope.trim().length < 10} onConfirm={() => approve.mutateAsync()}>Record approval</ConfirmButton>
               </Stack>
             ) : <Text size="sm" c="dimmed">Only organisation owners can approve remediation.</Text>}
           </Section>

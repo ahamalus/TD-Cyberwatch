@@ -27,7 +27,7 @@ import { useSearchParams } from "react-router-dom";
 import { useCan, useTenantId } from "../../api/auth";
 import { api, errorMessage } from "../../api/client";
 import type { Page, Website } from "../../api/types";
-import { fmtDateTime, fmtRelative, humanize } from "../../components/format";
+import { fmtDateTime, fmtRelative, humanize, minCharsHint } from "../../components/format";
 import { ConfirmButton, DataTable, EmptyState, PageHeader, Section } from "../../components/ui";
 
 interface Recipient {
@@ -332,8 +332,8 @@ function Suppressions() {
           <Stack>
             <TextInput label="Detection rule" description="e.g. script_changed, file_changes, tls:expiring" value={form.rule_key} onChange={(e) => setForm({ ...form, rule_key: e.currentTarget.value })} />
             <TextInput label="Path pattern (optional)" placeholder="wp-content/cache/**" value={form.path_glob} onChange={(e) => setForm({ ...form, path_glob: e.currentTarget.value })} />
-            <Textarea label="Justification" required description="Recorded in the audit trail." value={form.reason} onChange={(e) => setForm({ ...form, reason: e.currentTarget.value })} />
-            <Button w="fit-content" onClick={() => create.mutate()} loading={create.isPending} disabled={!form.rule_key || form.reason.length < 5}>Create rule</Button>
+            <Textarea label="Justification" required description={minCharsHint(form.reason, 5, "Recorded in the audit trail.")} value={form.reason} onChange={(e) => setForm({ ...form, reason: e.currentTarget.value })} />
+            <Button w="fit-content" onClick={() => create.mutate()} loading={create.isPending} disabled={!form.rule_key || form.reason.trim().length < 5}>Create rule</Button>
           </Stack>
         </Section>
       )}
