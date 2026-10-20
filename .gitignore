@@ -1,0 +1,4 @@
+# Secrets and machine-specific files: never commit
+.env
+local-credentials.txt
+.ruff_cache/
