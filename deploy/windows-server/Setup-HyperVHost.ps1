@@ -43,7 +43,8 @@ $net = $cfg.Network
 $lanMode = $net.Mode -eq "LAN"
 # Default gateway the VMs use: the office router (LAN) or this host's address on the private network (NAT).
 $gateway = if ($lanMode) { $net.Gateway } else { $net.HostGateway }
-$vms = @($cfg.VMs)
+# Windows PowerShell 5.1 cannot measure or filter hashtables by property, so use objects.
+$vms = @($cfg.VMs | ForEach-Object { [pscustomobject]$_ })
 $edge = $vms | Where-Object { $_.Name -eq $cfg.EdgeVm }
 if (-not $edge) { Fail "EdgeVm '$($cfg.EdgeVm)' is not in the VMs list." }
 
@@ -60,6 +61,7 @@ $forwards = @(
     @{ Protocol = "TCP"; Port = 443; ToVm = $edge.Name; Why = "HTTPS for every subdomain" }
     @{ Protocol = "UDP"; Port = 443; ToVm = $edge.Name; Why = "HTTP/3" }
 ) + @($cfg.ExtraPortForwards | Where-Object { $_ })
+$forwards = @($forwards | ForEach-Object { [pscustomobject]$_ })
 foreach ($f in $forwards) {
     if (-not ($vms | Where-Object { $_.Name -eq $f.ToVm })) { Fail "Port forward $($f.Protocol) $($f.Port) points to unknown VM '$($f.ToVm)'." }
 }
@@ -204,6 +206,7 @@ else {
             continue
         }
         $vhd = Join-Path $cfg.VmFolder "$($vm.Name)\$($vm.Name).vhdx"
+        New-Item -ItemType Directory -Force -Path (Split-Path $vhd) | Out-Null
         New-VM -Name $vm.Name -Generation 2 -MemoryStartupBytes ([int64]$vm.MemoryGB * 1GB) -SwitchName $net.SwitchName `
             -NewVHDPath $vhd -NewVHDSizeBytes ([int64]$vm.DiskGB * 1GB) -Path $cfg.VmFolder | Out-Null
         Set-VMMemory -VMName $vm.Name -DynamicMemoryEnabled $false
