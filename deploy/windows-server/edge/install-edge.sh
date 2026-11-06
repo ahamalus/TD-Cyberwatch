@@ -11,7 +11,11 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-PRIVATE_NET=${PRIVATE_NET:-10.10.0.0/24}
+# Network allowed to reach SSH: defaults to this VM's own network (e.g. 192.168.1.0/24).
+if [ -z "${PRIVATE_NET:-}" ]; then
+  MY_CIDR=$(ip -4 -o addr show scope global | awk 'NR==1 {print $4}')
+  PRIVATE_NET=$(python3 -c "import ipaddress,sys; print(ipaddress.ip_interface(sys.argv[1]).network)" "$MY_CIDR")
+fi
 SOURCE=${1:-Caddyfile.example}
 
 [ "$(id -u)" -eq 0 ] || { echo "Run with sudo."; exit 1; }
@@ -29,7 +33,7 @@ if ! command -v caddy >/dev/null; then
   dpkg-reconfigure -f noninteractive unattended-upgrades || true
 fi
 
-echo "==> Firewall: web from anywhere, SSH only from the private network"
+echo "==> Firewall: web from anywhere, SSH only from $PRIVATE_NET"
 ufw default deny incoming
 ufw default allow outgoing
 ufw allow 80/tcp
