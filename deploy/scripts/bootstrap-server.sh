@@ -7,6 +7,11 @@
 #   sudo CW_DOMAIN=cyberwatch.trustdata.ng ACME_EMAIL=team@trustdata.ng bash bootstrap.sh
 #
 # Before running: point a DNS A record for $CW_DOMAIN to this server's public IP.
+#
+# Behind a shared HTTPS edge (several VMs on one public IP, see docs/WINDOWS_SERVER_HYPERV.md):
+#   sudo CW_DOMAIN=cyberwatch.trustdata.ng ACME_EMAIL=team@trustdata.ng EDGE_IP=10.10.0.10 bash bootstrap.sh
+# CyberWatch then skips its own Caddy and serves plain HTTP on this VM's private address, port 8080,
+# reachable only from the edge VM.
 set -euo pipefail
 
 CW_DOMAIN=${CW_DOMAIN:-cyberwatch.trustdata.ng}
@@ -15,6 +20,16 @@ REPO_URL=${REPO_URL:-https://github.com/ahamalus/TD-Cyberwatch.git}
 BRANCH=${BRANCH:-main}
 APP_DIR=${APP_DIR:-/opt/cyberwatch}
 DEPLOY_USER=${DEPLOY_USER:-cyberwatch}
+EDGE_IP=${EDGE_IP:-}
+
+if [ -n "$EDGE_IP" ]; then
+  # Private address of this VM (the one used to reach the edge).
+  PRIVATE_IP=$(ip -4 route get "$EDGE_IP" | awk '{for (i=1;i<NF;i++) if ($i=="src") print $(i+1)}')
+  [ -n "$PRIVATE_IP" ] || { echo "Cannot find this VM's address towards $EDGE_IP."; exit 1; }
+  COMPOSE=(docker compose -f docker-compose.yml)
+else
+  COMPOSE=(docker compose -f docker-compose.yml -f deploy/docker-compose.edge.yml)
+fi
 
 [ "$(id -u)" -eq 0 ] || { echo "Run as root (sudo)."; exit 1; }
 
@@ -43,13 +58,20 @@ fi
 systemctl enable --now docker
 dpkg-reconfigure -f noninteractive unattended-upgrades || true
 
-echo "==> Firewall: SSH, HTTP, HTTPS only"
 ufw default deny incoming
 ufw default allow outgoing
-ufw allow OpenSSH
-ufw allow 80/tcp
-ufw allow 443/tcp
-ufw allow 443/udp
+if [ -n "$EDGE_IP" ]; then
+  echo "==> Firewall: SSH and CyberWatch (8080) from the private network only"
+  PRIVATE_NET=$(ip -4 -o addr show | awk -v ip="$PRIVATE_IP" '$4 ~ "^"ip"/" {print $4}' | head -n 1)
+  ufw allow from "${PRIVATE_NET:-$EDGE_IP}" to any port 22 proto tcp
+  ufw allow from "$EDGE_IP" to any port 8080 proto tcp
+else
+  echo "==> Firewall: SSH, HTTP, HTTPS only"
+  ufw allow OpenSSH
+  ufw allow 80/tcp
+  ufw allow 443/tcp
+  ufw allow 443/udp
+fi
 ufw --force enable
 
 echo "==> Deploy user and code"
@@ -71,14 +93,19 @@ if [ ! -f .env ]; then
     -e "s|^CW_CREDENTIAL_KEYS=.*|CW_CREDENTIAL_KEYS=k1:$KEY|" \
     .env.example > .env
   printf '\n# ---- Edge (Caddy) ----\nCW_DOMAIN=%s\nACME_EMAIL=%s\n' "$CW_DOMAIN" "$ACME_EMAIL" >> .env
+  if [ -n "$EDGE_IP" ]; then
+    # Docker-published ports bypass ufw, so bind to the private address only:
+    # the private Hyper-V network is not reachable from the internet.
+    sed -i "s|^CW_WEB_BIND=.*|CW_WEB_BIND=$PRIVATE_IP|" .env
+  fi
   chown "$DEPLOY_USER:$DEPLOY_USER" .env
   chmod 600 .env
   echo "    IMPORTANT: back up CW_CREDENTIAL_KEYS from $APP_DIR/.env to a safe offline location."
 fi
 
 echo "==> Building and starting CyberWatch"
-sudo -u "$DEPLOY_USER" docker compose -f docker-compose.yml -f deploy/docker-compose.edge.yml build
-sudo -u "$DEPLOY_USER" docker compose -f docker-compose.yml -f deploy/docker-compose.edge.yml up -d
+sudo -u "$DEPLOY_USER" "${COMPOSE[@]}" build
+sudo -u "$DEPLOY_USER" "${COMPOSE[@]}" up -d
 
 echo "==> Waiting for the API"
 for _ in $(seq 1 60); do
@@ -87,7 +114,10 @@ for _ in $(seq 1 60); do
   fi
   sleep 5
 done
-sudo -u "$DEPLOY_USER" docker compose -f docker-compose.yml -f deploy/docker-compose.edge.yml ps
+sudo -u "$DEPLOY_USER" "${COMPOSE[@]}" ps
+if [ -n "$EDGE_IP" ]; then
+  echo "    Behind the edge: point the edge Caddyfile at http://$PRIVATE_IP:8080 for $CW_DOMAIN"
+fi
 
 cat <<MSG
 
@@ -98,6 +128,6 @@ Next steps:
        cd $APP_DIR && sudo -u $DEPLOY_USER docker compose exec api python -m app.cli create-admin you@trustdata.ng "Your Name"
   2. Sign in at https://$CW_DOMAIN/login and enrol MFA (required for staff).
   3. Configure SMTP / WhatsApp / Paystack in $APP_DIR/.env, then:
-       sudo -u $DEPLOY_USER docker compose -f docker-compose.yml -f deploy/docker-compose.edge.yml up -d
+       cd $APP_DIR && sudo -u $DEPLOY_USER ${COMPOSE[*]} up -d
   4. Schedule backups (see docs/DEPLOYMENT.md §5).
 MSG

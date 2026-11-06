@@ -1,0 +1,70 @@
+# Edge reverse proxy: every subdomain on ONE public IP, each sent to its own VM.
+# Caddy gets and renews a Let's Encrypt certificate for each name automatically,
+# as soon as its DNS A record points at the server's public IP.
+#
+# Copy to /etc/caddy/Caddyfile on the edge VM (install-edge.sh does this), replace the
+# example names and addresses with yours, then:  sudo systemctl reload caddy
+# Check your edits first with:                    caddy validate --config /etc/caddy/Caddyfile
+
+{
+	email team@trustdata.ng
+}
+
+# Shared settings for every site.
+(common) {
+	encode zstd gzip
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		-Server
+	}
+	log {
+		output file /var/log/caddy/access.log {
+			roll_size 50MiB
+			roll_keep 10
+		}
+		format json
+	}
+}
+
+# TrustData CyberWatch VM (its web container listens on 10.10.0.20:8080).
+cyberwatch.trustdata.ng {
+	import common
+	reverse_proxy 10.10.0.20:8080 {
+		header_up X-Forwarded-Proto {scheme}
+	}
+}
+
+# Jitsi Meet VM (docker-jitsi-meet web container on port 8000; UDP 10000 is forwarded
+# directly to the VM by Windows NAT, see hyperv-config.psd1).
+meet.trustdata.ng {
+	import common
+	reverse_proxy 10.10.0.30:8000
+}
+
+# Any other application VM: name -> VM address and the port the app listens on.
+app3.trustdata.ng {
+	import common
+	reverse_proxy 10.10.0.40:80
+}
+
+app4.trustdata.ng {
+	import common
+	reverse_proxy 10.10.0.50:3000
+}
+
+# A site that stays on the Windows host itself (e.g. IIS moved to port 8081):
+# the host is reachable from the VMs at 10.10.0.1.
+# legacy.trustdata.ng {
+# 	import common
+# 	reverse_proxy 10.10.0.1:8081
+# }
+
+# An application that already serves HTTPS itself (self-signed inside the private network):
+# secure.trustdata.ng {
+# 	import common
+# 	reverse_proxy https://10.10.0.40:443 {
+# 		transport http {
+# 			tls_insecure_skip_verify
+# 		}
+# 	}
+# }
