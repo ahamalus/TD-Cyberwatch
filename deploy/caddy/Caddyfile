@@ -1,0 +1,24 @@
+# HTTPS edge for TrustData CyberWatch. Caddy obtains and renews the
+# Let's Encrypt certificate automatically once DNS points at this server.
+{
+	email {$ACME_EMAIL}
+}
+
+{$CW_DOMAIN} {
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=63072000; includeSubDomains"
+		-Server
+	}
+
+	# Paystack webhooks and the API share the same upstream.
+	reverse_proxy web:8080 {
+		header_up X-Forwarded-Proto {scheme}
+	}
+
+	log {
+		output stdout
+		format json
+	}
+}

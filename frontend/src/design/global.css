@@ -1,0 +1,110 @@
+/* Global surface tokens. Light = customer/admin default; dark = operations. */
+:root {
+  --cw-navy: #0b1220;
+  --cw-slate: #111b2e;
+  --cw-blue: #1677ff;
+  --cw-light-blue: #eaf2ff;
+  --cw-cloud: #f5f7fb;
+  --cw-white: #ffffff;
+  --cw-muted: #64748b;
+  --cw-border: #e2e8f0;
+  --cw-green: #16a875;
+  --cw-amber: #d99a17;
+  --cw-red: #dc4545;
+  --cw-cyan: #0891b2;
+}
+
+:root[data-mantine-color-scheme="light"] {
+  --cw-page-bg: var(--cw-cloud);
+  --cw-surface: var(--cw-white);
+  --cw-surface-alt: #f8fafc;
+  --cw-text: var(--cw-navy);
+  --cw-text-muted: var(--cw-muted);
+  --cw-line: var(--cw-border);
+  --cw-sidebar-bg: var(--cw-white);
+  --cw-sidebar-active: var(--cw-light-blue);
+}
+
+:root[data-mantine-color-scheme="dark"] {
+  --cw-page-bg: var(--cw-navy);
+  --cw-surface: var(--cw-slate);
+  --cw-surface-alt: #0e1726;
+  --cw-text: #e6ebf3;
+  --cw-text-muted: #94a3b8;
+  --cw-line: #22314b;
+  --cw-sidebar-bg: #0a101c;
+  --cw-sidebar-active: rgba(22, 119, 255, 0.16);
+  --mantine-color-body: var(--cw-navy);
+  --mantine-color-default-border: #22314b;
+}
+
+body {
+  background: var(--cw-page-bg);
+  color: var(--cw-text);
+  font-feature-settings: "cv11", "ss01", "tnum";
+  -webkit-font-smoothing: antialiased;
+}
+
+[data-mantine-color-scheme="dark"] .mantine-Card-root,
+[data-mantine-color-scheme="dark"] .mantine-Paper-root {
+  background-color: var(--cw-surface);
+}
+
+.cw-metric {
+  font-variant-numeric: tabular-nums;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+}
+
+.cw-mono {
+  font-family: var(--mantine-font-family-monospace);
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.cw-nav-link {
+  border-radius: 8px;
+  font-weight: 500;
+  color: var(--cw-text-muted);
+}
+.cw-nav-link[data-active] {
+  background: var(--cw-sidebar-active);
+  color: var(--cw-blue);
+}
+[data-mantine-color-scheme="dark"] .cw-nav-link[data-active] {
+  color: #7fb2ff;
+}
+
+.cw-table-scroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.cw-skip-link {
+  position: absolute;
+  left: -9999px;
+  top: 8px;
+  z-index: 1000;
+  padding: 8px 12px;
+  background: var(--cw-blue);
+  color: white;
+  border-radius: 6px;
+}
+.cw-skip-link:focus {
+  left: 8px;
+}
+
+.cw-hero {
+  background:
+    radial-gradient(1200px 500px at 85% -10%, rgba(22, 119, 255, 0.22), transparent 60%),
+    linear-gradient(180deg, #0b1220 0%, #0f1a2e 100%);
+  color: #e6ebf3;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.001ms !important;
+    transition-duration: 0.001ms !important;
+  }
+}
