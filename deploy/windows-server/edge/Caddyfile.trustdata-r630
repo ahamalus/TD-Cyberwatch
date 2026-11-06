@@ -1,6 +1,7 @@
-# Edge VM (192.168.1.241) for the Trust Data R630: every subdomain on public IP 98.97.76.237.
+# Edge VM (192.168.1.241) for the Trust Data R630: every site on public IP 98.97.76.237.
 # Apply with:  sudo bash install-edge.sh Caddyfile.trustdata-r630
 # The router is switched to forward 80/443 here only AFTER this file serves every site.
+# Caddy obtains a Let's Encrypt certificate for each name below once its DNS points at 98.97.76.237.
 
 {
 	email team@trustdata.ng
@@ -29,27 +30,27 @@ cyberwatch.trustdata.ng {
 	}
 }
 
-# ---- Existing applications: replace the example names with the real subdomains, then remove the "#".
-
-# IIS site "adsgcsc" on the Windows host (unchanged, still on port 80)
-# adsgcsc.example.ng {
-# 	import common
-# 	reverse_proxy 192.168.1.96:80
-# }
-
 # IIS site "apc-campaign" on the Windows host (unchanged, port 8081)
-# apc.example.ng {
-# 	import common
-# 	reverse_proxy 192.168.1.96:8081
-# }
+apcadamawa.com.ng, www.apcadamawa.com.ng {
+	import common
+	reverse_proxy 192.168.1.96:8081
+}
 
-# Jitsi Meet VM: its web page now goes through the edge, which holds the public certificate.
+# Jitsi Meet VM (Adamawa e-Justice). Its web page goes through the edge, which holds the public
+# certificate; the VM's own certificate is not checked inside the office network.
 # Media (UDP 10000) keeps going straight from the router to 192.168.1.240.
-# meet.example.ng {
-# 	import common
-# 	reverse_proxy https://192.168.1.240:443 {
-# 		transport http {
-# 			tls_insecure_skip_verify
-# 		}
-# 	}
-# }
+meet.adamawastate.gov.ng {
+	import common
+	reverse_proxy https://192.168.1.240:443 {
+		transport http {
+			tls_insecure_skip_verify
+		}
+	}
+}
+
+# IIS site "adsgcsc" has no domain: it is opened as http://98.97.76.237 and stays plain HTTP.
+# This catch-all only answers HTTP requests for names not listed above (the named sites
+# above still redirect to HTTPS and still pass their certificate checks).
+http:// {
+	reverse_proxy 192.168.1.96:80
+}
