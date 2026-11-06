@@ -30,6 +30,19 @@ cyberwatch.trustdata.ng {
 	}
 }
 
+# CyberWatch inside the office: https://192.168.1.241 (office network only).
+# Uses Caddy's own certificate authority because Let's Encrypt cannot certify a private address:
+# browsers warn once, unless the edge's root certificate is installed on the office PCs.
+https://192.168.1.241 {
+	tls internal
+	@outside not remote_ip private_ranges
+	abort @outside
+	import common
+	reverse_proxy 192.168.1.242:8080 {
+		header_up X-Forwarded-Proto {scheme}
+	}
+}
+
 # IIS site "apc-campaign" on the Windows host (unchanged, port 8081)
 apcadamawa.com.ng, www.apcadamawa.com.ng {
 	import common
