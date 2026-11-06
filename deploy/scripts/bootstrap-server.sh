@@ -62,7 +62,8 @@ ufw default deny incoming
 ufw default allow outgoing
 if [ -n "$EDGE_IP" ]; then
   echo "==> Firewall: SSH and CyberWatch (8080) from the private network only"
-  PRIVATE_NET=$(ip -4 -o addr show | awk -v ip="$PRIVATE_IP" '$4 ~ "^"ip"/" {print $4}' | head -n 1)
+  PRIVATE_CIDR=$(ip -4 -o addr show | awk -v ip="$PRIVATE_IP" '$4 ~ "^"ip"/" {print $4}' | head -n 1)
+  PRIVATE_NET=$(python3 -c "import ipaddress,sys; print(ipaddress.ip_interface(sys.argv[1]).network)" "$PRIVATE_CIDR" 2>/dev/null || true)
   ufw allow from "${PRIVATE_NET:-$EDGE_IP}" to any port 22 proto tcp
   ufw allow from "$EDGE_IP" to any port 8080 proto tcp
 else
@@ -73,6 +74,31 @@ else
   ufw allow 443/udp
 fi
 ufw --force enable
+
+if [ -n "$EDGE_IP" ]; then
+  # Ports published by Docker bypass ufw. Allow port 8080 on this VM only from the edge VM,
+  # so other machines on the same network cannot reach CyberWatch over plain HTTP.
+  # --ctdir ORIGINAL: match only client->CyberWatch packets, never the replies going back to the edge.
+  RULE="-p tcp -m conntrack --ctdir ORIGINAL --ctorigdst $PRIVATE_IP --ctorigdstport 8080 ! -s $EDGE_IP -j DROP"
+  cat > /etc/systemd/system/cyberwatch-edge-only.service <<UNIT
+[Unit]
+Description=CyberWatch: accept port 8080 only from the edge proxy ($EDGE_IP)
+After=docker.service
+Requires=docker.service
+PartOf=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c 'iptables -C DOCKER-USER $RULE 2>/dev/null || iptables -I DOCKER-USER $RULE'
+ExecStop=/bin/sh -c 'iptables -D DOCKER-USER $RULE 2>/dev/null || true'
+
+[Install]
+WantedBy=docker.service
+UNIT
+  systemctl daemon-reload
+  systemctl enable --now cyberwatch-edge-only.service
+fi
 
 echo "==> Deploy user and code"
 id "$DEPLOY_USER" >/dev/null 2>&1 || useradd --create-home --shell /bin/bash "$DEPLOY_USER"
