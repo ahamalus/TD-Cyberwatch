@@ -1,0 +1,77 @@
+# Edge VM (192.168.1.241) for the Trust Data R630.
+# Apply with:  sudo bash install-edge.sh Caddyfile.trustdata-r630
+#
+# Public access to CyberWatch comes through a Cloudflare Tunnel (no router port forwarding):
+#   Internet -> Cloudflare (HTTPS) -> cloudflared on this VM -> Caddy 127.0.0.1:8088 -> CyberWatch
+# Office access: https://192.168.1.241 (Caddy's own certificate).
+# Jitsi, APC and adsgcsc are NOT served by this edge; the router keeps sending their traffic as before.
+
+{
+	email team@trustdata.ng
+	servers 127.0.0.1:8088 {
+		# Only cloudflared (on this VM) connects here, so Cloudflare's visitor-IP header can be trusted.
+		trusted_proxies static 127.0.0.1/32 ::1/128
+		client_ip_headers Cf-Connecting-Ip
+	}
+}
+
+(common) {
+	encode zstd gzip
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		-Server
+	}
+	log {
+		output file /var/log/caddy/access.log {
+			roll_size 50MiB
+			roll_keep 10
+		}
+		format json
+	}
+}
+
+# Cloudflare Tunnel entrance for https://cyberwatch.trustdata.ng (Cloudflare holds the certificate).
+# Point the tunnel's public hostname at:  http://localhost:8088
+http://:8088 {
+	bind 127.0.0.1
+	import common
+	reverse_proxy 192.168.1.242:8080 {
+		# Replace any client-supplied value with the visitor IP vouched for by Cloudflare.
+		header_up X-Forwarded-For {client_ip}
+		header_up X-Forwarded-Proto https
+	}
+}
+
+# CyberWatch inside the office: https://192.168.1.241 (office network only).
+# Uses Caddy's own certificate authority because Let's Encrypt cannot certify a private address:
+# browsers warn once, unless the edge's root certificate is installed on the office PCs.
+https://192.168.1.241 {
+	tls internal
+	@outside not remote_ip private_ranges
+	abort @outside
+	import common
+	reverse_proxy 192.168.1.242:8080 {
+		header_up X-Forwarded-Proto {scheme}
+	}
+}
+
+# ---- Only if the router ever forwards ports 80/443 to this VM instead of using the tunnel:
+# remove the "#" from the blocks below (each needs its DNS pointing at the public IP).
+#
+# apcadamawa.com.ng, www.apcadamawa.com.ng {
+# 	import common
+# 	reverse_proxy 192.168.1.96:8081
+# }
+#
+# meet.adamawastate.gov.ng {
+# 	import common
+# 	reverse_proxy https://192.168.1.240:443 {
+# 		transport http {
+# 			tls_insecure_skip_verify
+# 		}
+# 	}
+# }
+#
+# http:// {
+# 	reverse_proxy 192.168.1.96:80
+# }
