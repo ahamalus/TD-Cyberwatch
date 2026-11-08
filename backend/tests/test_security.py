@@ -548,3 +548,52 @@ def test_production_refuses_unsafe_config(monkeypatch):
     assert any("COOKIE_SECURE" in p for p in problems)
     assert any("OUTBOUND" in p for p in problems)
     assert any("database" in p.lower() for p in problems)
+
+
+def test_admin_activates_offline_plan_after_trial(alice):
+    from datetime import timedelta
+
+    from sqlalchemy import select
+
+    from app.db.base import utcnow
+    from app.models import AuditEvent, Subscription
+    from app.services import billing
+
+    a, tid = alice
+    with platform_session() as db:
+        sub = db.execute(select(Subscription).where(Subscription.tenant_id == tid)).scalar_one()
+        sub.trial_ends_at = utcnow() - timedelta(days=1)
+        db.commit()
+    assert a.get(f"/api/v1/tenants/{tid}").json()["plan"]["in_service"] is False
+
+    body = {"plan_key": "business", "months": 12, "reference": "INV-2026-001", "note": "Bank transfer", "confirm": True}
+    analyst = _staff("soc2@trustdata.example.com", ["soc_analyst"])
+    assert analyst.post(f"/api/v1/admin/tenants/{tid}/subscription", json=body).status_code == 403
+
+    admin = _staff("billing-admin@trustdata.example.com", ["platform_admin"])
+    assert admin.post(f"/api/v1/admin/tenants/{tid}/subscription", json={**body, "confirm": False}).status_code == 422
+    assert admin.post(f"/api/v1/admin/tenants/{tid}/subscription", json={**body, "plan_key": "nope"}).status_code == 422
+    r = admin.post(f"/api/v1/admin/tenants/{tid}/subscription", json=body)
+    assert r.status_code == 200, r.text
+    first_end = r.json()["current_period_end"]
+    plan = a.get(f"/api/v1/tenants/{tid}").json()["plan"]
+    assert plan["in_service"] is True and plan["key"] == "business"
+    assert a.post(f"/api/v1/tenants/{tid}/websites", json={"name": "s", "url": "https://paid.example.com/"}).status_code == 201
+
+    # Recording the next payment for the same plan extends from the current end date.
+    r2 = admin.post(f"/api/v1/admin/tenants/{tid}/subscription", json={**body, "months": 1, "reference": "INV-2026-002"})
+    assert r2.json()["current_period_end"] > first_end
+    with platform_session() as db:
+        subs = db.execute(select(Subscription).where(Subscription.tenant_id == tid)).scalars().all()
+        assert sum(1 for s in subs if s.is_current) == 1 and len(subs) == 3
+        logged = db.execute(select(AuditEvent).where(AuditEvent.action == "admin.subscription_activated")).scalars().all()
+        assert {e.details["reference"] for e in logged} == {"INV-2026-001", "INV-2026-002"}
+
+        # Fixed term: at the end it lapses instead of attempting a card renewal.
+        cur = db.execute(select(Subscription).where(Subscription.tenant_id == tid, Subscription.is_current.is_(True))).scalar_one()
+        cur.current_period_end = utcnow() - timedelta(minutes=1)
+        db.commit()
+        stats = billing.run_subscription_maintenance(db)
+        db.commit()
+        assert stats["cancelled"] == 1 and stats["renewal_failed"] == 0
+    assert a.get(f"/api/v1/tenants/{tid}").json()["plan"]["in_service"] is False

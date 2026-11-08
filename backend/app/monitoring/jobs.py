@@ -83,8 +83,16 @@ def set_dispatcher(dispatcher: Dispatcher | None) -> None:
     _dispatcher = dispatcher
 
 
-def dispatch(job: ScanJob, countdown: int = 0) -> None:
-    (_dispatcher or _celery_dispatch)(job, countdown)
+def dispatch(job: ScanJob, countdown: int = 0) -> bool:
+    """Hand a committed job to the queue. Never raises: if the broker is unreachable the job
+    stays queued and ``recover_stale_jobs`` re-sends it, so callers need no error handling."""
+    try:
+        (_dispatcher or _celery_dispatch)(job, countdown)
+        return True
+    except Exception as exc:  # noqa: BLE001 - any broker/transport failure is recoverable later
+        log.error("job_dispatch_failed", job_id=str(job.id), job_type=job.job_type, error=type(exc).__name__,
+                  detail=str(exc)[:200])
+        return False
 
 
 class JobCancelled(Exception):
@@ -569,8 +577,8 @@ def recover_stale_jobs() -> dict[str, int]:
             if job.status == "queued":
                 dispatch(job)
         for job in lost:
-            dispatch(job)
-            stats["redispatched"] += 1
+            if dispatch(job):
+                stats["redispatched"] += 1
     return stats
 
 

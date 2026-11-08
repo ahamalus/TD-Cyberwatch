@@ -355,6 +355,52 @@ def cancel_subscription(db: Session, tenant_id: uuid.UUID, actor: AuditActor) ->
     return sub
 
 
+def _add_months(start, months: int):
+    """Same day-of-month ``months`` later, clamped to the month's last day (31 Jan + 1 month = 28/29 Feb)."""
+    import calendar
+
+    total = start.month - 1 + months
+    year, month = start.year + total // 12, total % 12 + 1
+    return start.replace(year=year, month=month, day=min(start.day, calendar.monthrange(year, month)[1]))
+
+
+def activate_offline(db: Session, tenant_id: uuid.UUID, plan_key: str, months: int, reference: str,
+                     note: str | None, actor: AuditActor) -> Subscription:
+    """Activate a plan paid outside Paystack (invoice, bank transfer, contract) for a fixed term.
+
+    The term is not renewed automatically: the subscription ends at the close of the period
+    unless an administrator records the next payment. Activating the same plan again while it
+    is still in service extends it from its current end date.
+    """
+    tenant = db.get(Tenant, tenant_id)
+    if tenant is None:
+        raise NotFound("Organisation not found.")
+    plan = db.execute(select(Plan).where(Plan.key == plan_key, Plan.is_active.is_(True))).scalar_one_or_none()
+    if plan is None:
+        raise ValidationFailed("Unknown or inactive plan.")
+    now = utcnow()
+    current = db.execute(
+        select(Subscription).where(Subscription.tenant_id == tenant_id, Subscription.is_current.is_(True))
+    ).scalar_one_or_none()
+    start = now
+    if (current is not None and current.plan_id == plan.id and current.status == "active"
+            and current.current_period_end and current.current_period_end > now):
+        start = current.current_period_end
+    if current is not None:
+        current.is_current = False
+        db.flush()
+    sub = Subscription(tenant_id=tenant_id, plan_id=plan.id, status="active", interval="monthly",
+                       current_period_start=now, current_period_end=_add_months(start, months),
+                       provider="manual", cancel_at_period_end=True, is_current=True)
+    db.add(sub)
+    db.flush()
+    audit.record(db, "admin.subscription_activated", actor=actor, tenant_id=tenant_id, target_type="subscription",
+                 target_id=sub.id, details={"plan": plan.key, "months": months, "reference": reference, "note": note,
+                                            "period_end": sub.current_period_end.isoformat(),
+                                            "replaced": str(current.id) if current else None})
+    return sub
+
+
 def _owners(db: Session, tenant_id: uuid.UUID) -> list[User]:
     return list(db.execute(
         select(User).join(TenantMembership, TenantMembership.user_id == User.id).where(

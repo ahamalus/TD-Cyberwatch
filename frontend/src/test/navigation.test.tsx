@@ -45,3 +45,21 @@ describe("application shell", () => {
     expect(screen.getByLabelText("Toggle colour theme")).toBeInTheDocument();
   });
 });
+
+describe("portal navigation", () => {
+  const all = () => true;
+
+  it("keeps every admin menu item inside the admin portal", async () => {
+    const { adminNavGroups } = await import("../App");
+    const links = adminNavGroups(all).flatMap((g) => g.items.map((i) => i.to));
+    expect(links.length).toBeGreaterThan(0);
+    for (const to of links) expect(to).toMatch(/^\/admin\//);
+    expect(links).toContain("/admin/health");
+    expect(links).toContain("/admin/incidents");
+  });
+
+  it("keeps every operations menu item inside the operations portal", async () => {
+    const { opsNavGroups } = await import("../App");
+    for (const to of opsNavGroups(all).flatMap((g) => g.items.map((i) => i.to))) expect(to).toMatch(/^\/ops\//);
+  });
+});

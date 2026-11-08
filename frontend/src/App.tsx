@@ -121,9 +121,12 @@ function StaffGuard({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
-function AdminLayout() {
-  const can = usePlatformCan();
-  const groups: NavGroup[] = [
+/**
+ * Admin navigation. Every item must stay under /admin: a link into /ops would switch the
+ * user into the Security Operations portal (badge, theme and menu change).
+ */
+export function adminNavGroups(can: (perm: string) => boolean): NavGroup[] {
+  return [
     {
       label: "Platform",
       items: [
@@ -144,25 +147,29 @@ function AdminLayout() {
     {
       label: "Operations",
       items: [
-        { label: "Global Incidents", to: "/ops/incidents", icon: IconAlertTriangle, visible: can("ops:incidents:read") },
+        { label: "Global Incidents", to: "/admin/incidents", icon: IconAlertTriangle, visible: can("ops:incidents:read") },
         { label: "Managed Services", to: "/admin/grants", icon: IconHeadset, visible: can("grants:request") || can("grants:issue") },
         { label: "Analytics", to: "/admin/analytics", icon: IconChartBar, visible: can("platform:overview") },
         { label: "Audit and Compliance", to: "/admin/audit", icon: IconClipboardList, visible: can("platform:audit:read") },
         { label: "Configuration", to: "/admin/config", icon: IconSettings, visible: can("platform:config:manage") },
-        { label: "System Health", to: "/ops/workers", icon: IconHeartRateMonitor, visible: can("platform:health:read") },
+        { label: "System Health", to: "/admin/health", icon: IconHeartRateMonitor, visible: can("platform:health:read") },
       ],
     },
   ];
+}
+
+function AdminLayout() {
+  const can = usePlatformCan();
   return (
     <StaffGuard>
-      <AppShellLayout area="admin" groups={groups} headerExtra={<Text fw={600}>Platform Administration</Text>} defaultScheme="light" />
+      <AppShellLayout area="admin" groups={adminNavGroups(can)} headerExtra={<Text fw={600}>Platform Administration</Text>} defaultScheme="light" />
     </StaffGuard>
   );
 }
 
-function OpsLayout() {
-  const can = usePlatformCan();
-  const groups: NavGroup[] = [
+/** Security Operations navigation; every item stays under /ops. */
+export function opsNavGroups(can: (perm: string) => boolean): NavGroup[] {
+  return [
     {
       label: "Security Operations",
       items: [
@@ -179,9 +186,13 @@ function OpsLayout() {
       ],
     },
   ];
+}
+
+function OpsLayout() {
+  const can = usePlatformCan();
   return (
     <StaffGuard>
-      <AppShellLayout area="ops" groups={groups} headerExtra={<Text fw={600}>Security Operations Centre</Text>} defaultScheme="dark" />
+      <AppShellLayout area="ops" groups={opsNavGroups(can)} headerExtra={<Text fw={600}>Security Operations Centre</Text>} defaultScheme="dark" />
     </StaffGuard>
   );
 }
@@ -285,6 +296,10 @@ export function App() {
         <Route path="analytics" element={<Admin.AnalyticsPage />} />
         <Route path="audit" element={<Admin.AuditAdminPage />} />
         <Route path="config" element={<Admin.ConfigurationPage />} />
+        {/* Shared operations pages, shown inside the admin portal so the portal does not switch. */}
+        <Route path="incidents" element={<Ops.OpsIncidentsPage />} />
+        <Route path="health" element={<Ops.WorkerHealthPage />} />
+        <Route path="jobs" element={<Ops.ScanQueuePage />} />
         <Route path="*" element={<NotFound />} />
       </Route>
       <Route path="/ops" element={<RequireAuth><OpsLayout /></RequireAuth>}>

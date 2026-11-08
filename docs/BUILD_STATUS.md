@@ -19,6 +19,7 @@ Last updated: 2026-10-19 (session 1). Statuses: **Not Started · In Progress · 
 | Migrations | `alembic upgrade head` / `downgrade base` / `upgrade head` | Succeeded |
 | Docker images | `docker build` backend + web; `docker compose up` (base + `docker-compose.local.yml`) | Both images build; full stack of 11 containers starts healthy |
 | Local test kit | `start-local.sh` and `start-local.ps1` (PowerShell 7) on a clean volume set | `.env` generated, migrations + seed, admin created; through nginx: SFTP connection test, availability *up*, 6-file baseline, `simulate-attack` → 3 changes + High incident, alert email delivered to Mailpit; customer and admin browser sign-in with 0 console errors |
+| Full system check (2026-11-08) | 106 backend tests; 15 frontend tests; browser walk-through of all 44 menu pages (admin, operations, customer) with staff MFA enrolment and MFA sign-in; SFTP scan → incident → email; `app.cli health` | All pass. Found and fixed: unpinned transitive dependency (kombu 5.7.0) broke Celery workers in fresh builds; queue outage returned HTTP 500 instead of leaving the job for recovery; admin menu links opened the operations portal; no way to activate invoice/bank-transfer plans after the trial |
 
 ## Feature status
 

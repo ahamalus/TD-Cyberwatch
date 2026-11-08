@@ -87,3 +87,22 @@ non-HTTP port (mail, databases for remote clients, etc.) is added the same way i
 The example layout gives the VMs 42 GB and 22 vCPU, leaving about 20 GB for Windows and headroom.
 - **CPU:** a mild CPU overcommit is normal. Jitsi has a higher CPU weight, so video hearings stay smooth during CyberWatch scans.
 - **Memory:** dynamic memory is off, so one VM cannot starve another.
+
+## Health check and updates (CyberWatch VM)
+
+Check every component (containers, workers, scheduler, job queue, audit trail, firewall, disk):
+```bash
+sudo bash /opt/cyberwatch/deploy/scripts/healthcheck.sh
+```
+Every line should read `PASS`. The script exits with an error if anything fails, so it can also run from cron.
+
+Update to the latest version, then re-check:
+```bash
+cd /opt/cyberwatch && sudo -u cyberwatch git pull
+sudo -u cyberwatch docker compose -f docker-compose.yml up -d --build
+sudo bash deploy/scripts/healthcheck.sh
+```
+
+Customers paying by invoice or bank transfer: go to **Platform Administration → Customers → Activate plan** and record
+the payment reference. The plan runs for the chosen term; record the next payment before it ends to extend it.
+

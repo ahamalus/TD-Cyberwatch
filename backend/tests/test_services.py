@@ -673,3 +673,34 @@ def test_demo_data_refused_in_production(monkeypatch):
     assert Settings(environment="production").is_synthetic_data_allowed is False
     assert Settings(environment="demo").is_synthetic_data_allowed is True
 
+
+
+def test_broker_outage_keeps_job_queued_and_recovery_resends(alice):
+    """If the queue is unreachable the request still succeeds; the stale-job sweep delivers it later."""
+    from app.monitoring import jobs
+    from tests.conftest import DISPATCHED
+
+    s, tid = alice
+    wid = _site(tid)
+
+    def broken(job, countdown=0):
+        raise ConnectionError("broker unreachable")
+
+    jobs.set_dispatcher(broken)
+    try:
+        r = s.post(f"/api/v1/tenants/{tid}/websites/{wid}/checks", json={"check": "availability"})
+    finally:
+        jobs.set_dispatcher(lambda job, countdown=0: DISPATCHED.append((job.id, countdown)))
+    assert r.status_code == 202, r.text
+    job_id = uuid.UUID(r.json()["job_id"])
+    # A repeat request attaches to the same queued job instead of failing.
+    assert s.post(f"/api/v1/tenants/{tid}/websites/{wid}/checks", json={"check": "availability"}).json()["created"] is False
+
+    with platform_session() as db:
+        job = db.get(ScanJob, job_id)
+        assert job.status == "queued"
+        job.queued_at = utcnow() - timedelta(minutes=15)
+        db.commit()
+    DISPATCHED.clear()
+    assert jobs.recover_stale_jobs()["redispatched"] == 1
+    assert [d[0] for d in DISPATCHED] == [job_id]

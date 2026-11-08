@@ -143,6 +143,29 @@ def set_tenant_status(tenant_id: uuid.UUID, body: TenantStatusIn,
     return {"id": str(t.id), "status": t.status, "note": "Customer data is retained; monitoring pauses while not active."}
 
 
+class OfflineActivationIn(BaseModel):
+    plan_key: str = Field(min_length=1, max_length=40)
+    months: int = Field(ge=1, le=36)
+    reference: str = Field(min_length=3, max_length=120)
+    note: str | None = Field(default=None, max_length=1000)
+    confirm: bool
+
+
+@admin.post("/tenants/{tenant_id}/subscription")
+def activate_subscription(tenant_id: uuid.UUID, body: OfflineActivationIn,
+                          pc: PlatformContext = Depends(require_platform(P.PLATFORM_TENANTS_MANAGE))) -> dict:
+    """Record a plan paid outside online checkout (invoice, bank transfer) and activate it."""
+    if not body.confirm:
+        raise ValidationFailed("Confirmation is required for this action.")
+    from app.services.billing import activate_offline
+
+    sub = activate_offline(pc.db, tenant_id, body.plan_key, body.months, body.reference.strip(),
+                           (body.note or "").strip() or None, pc.actor())
+    pc.db.commit()
+    return {"subscription_id": str(sub.id), "plan": body.plan_key, "status": sub.status,
+            "current_period_end": sub.current_period_end}
+
+
 # ---------------------------------------------------------------- staff & roles
 
 

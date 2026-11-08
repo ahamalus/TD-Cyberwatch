@@ -123,7 +123,7 @@ export function AccountSecurity() {
               <Text size="sm">Add this account to your authenticator app using the setup key, then enter the 6-digit code.</Text>
               <Code block>{enrol.secret}</Code>
               <Text size="xs" c="dimmed" style={{ wordBreak: "break-all" }}>{enrol.otpauth_uri}</Text>
-              <Center><PinInput length={6} type="number" value={code} onChange={setCode} aria-label="Verification code" oneTimeCode /></Center>
+              <Center><PinInput length={6} type="number" value={code} onChange={setCode} ariaLabel="Verification code" oneTimeCode /></Center>
               <Button onClick={() => confirm.mutate()} loading={confirm.isPending} disabled={code.length !== 6}>Verify and enable</Button>
             </Stack>
           ) : (

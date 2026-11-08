@@ -8,6 +8,7 @@
     python -m app.cli report-backup STATUS PATH # record backup outcome (used by backup script)
     python -m app.cli demo-data                 # synthetic demo tenant (non-production only)
     python -m app.cli verify-audit              # verify the audit hash chain
+    python -m app.cli health                    # PASS/FAIL report of workers, scheduler, queue, audit
 """
 
 from __future__ import annotations
@@ -109,6 +110,45 @@ def cmd_verify_audit() -> None:
         sys.exit(1)
 
 
+def cmd_health() -> None:
+    """Print one PASS/FAIL line per component; exit 1 if anything fails (for scripts and cron)."""
+    from datetime import timedelta
+
+    from sqlalchemy import func
+
+    from app.models import ScanJob
+    from app.services.health import system_health
+
+    checks: list[tuple[bool, str, str]] = []
+    try:
+        import kombu.transport.redis  # noqa: F401 - the queue transport must import in this image
+
+        checks.append((True, "queue library", "Celery Redis transport loads"))
+    except Exception as exc:  # noqa: BLE001
+        checks.append((False, "queue library", f"{type(exc).__name__}: {exc}"))
+    with platform_session() as db:
+        h = system_health(db)
+        checks.append((h["database"]["ok"], "database", "reachable" if h["database"]["ok"] else str(h["database"])))
+        checks.append((h["redis"]["ok"], "redis", "reachable" if h["redis"]["ok"] else str(h["redis"])))
+        checks.append((h["scheduler"]["ok"], "scheduler", "heartbeat within 3 minutes" if h["scheduler"]["ok"] else "no recent heartbeat"))
+        alive = sorted({q for w in h["workers"] if w["alive"] for q in (w["queues"] or [])})
+        missing = [q for q in ("monitoring", "checks", "notifications", "default") if q not in alive]
+        checks.append((not missing, "workers", f"queues served: {', '.join(alive) or 'none'}"
+                       + (f"; NOT served: {', '.join(missing)}" if missing else "")))
+        stuck = db.execute(select(func.count()).select_from(ScanJob).where(
+            ScanJob.status == "queued", ScanJob.queued_at < utcnow() - timedelta(minutes=20))).scalar_one()
+        checks.append((stuck == 0, "job queue", "no checks waiting over 20 minutes" if stuck == 0 else f"{stuck} checks waiting over 20 minutes"))
+        res = audit.verify_chain(db)
+        checks.append((res.valid, "audit trail", f"{res.events_checked} events, chain {'intact' if res.valid else 'BROKEN at ' + str(res.first_invalid_seq)}"))
+        disk = h.get("disk", {})
+        if "used_pct" in disk:
+            checks.append((disk["used_pct"] < 85, "storage disk", f"{disk['used_pct']}% used"))
+    for ok, name, detail in checks:
+        print(f"{'PASS' if ok else 'FAIL'}  {name:<20} {detail}")
+    if not all(ok for ok, _, _ in checks):
+        sys.exit(1)
+
+
 def main(argv: list[str]) -> None:
     if not argv:
         print(__doc__)
@@ -126,6 +166,8 @@ def main(argv: list[str]) -> None:
         cmd_report_backup(args[0], args[1])
     elif cmd == "verify-audit":
         cmd_verify_audit()
+    elif cmd == "health":
+        cmd_health()
     elif cmd == "demo-data":
         if not get_settings().is_synthetic_data_allowed:
             sys.exit("Synthetic demo data is only allowed in development, test or demo environments.")

@@ -9,9 +9,13 @@ WORKDIR /app
 COPY requirements.txt requirements.lock ./
 # Optional: behind a TLS-intercepting proxy, pass its CA without baking it in:
 #   docker build --secret id=extra_ca,src=/path/ca.pem ...
+# requirements.lock pins every transitive dependency, so a new upstream release cannot change
+# the image (kombu 5.7.0 once broke Celery's Redis transport). The import check fails the build,
+# not the running server, if the queue or database stack is incomplete.
 RUN --mount=type=secret,id=extra_ca \
     if [ -s /run/secrets/extra_ca ]; then export PIP_CERT=/run/secrets/extra_ca; fi; \
-    pip install -r requirements.txt
+    pip install -r requirements.txt -c requirements.lock \
+ && python -c "import kombu.transport.redis, celery, redis, psycopg, sqlalchemy, fastapi, uvicorn, paramiko, argon2"
 COPY alembic.ini ./
 COPY alembic ./alembic
 COPY app ./app

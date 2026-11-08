@@ -62,7 +62,7 @@ export function AdminOverviewPage() {
         <StatCard label="Customer organisations" icon={IconBuilding} loading={!d} value={sum(d?.tenants)} context={d ? `${d.tenants.active ?? 0} active · ${d.tenants.suspended ?? 0} suspended · ${d.demo_tenants} demo` : ""} to="/admin/customers" />
         <StatCard label="Active subscriptions" icon={IconCash} loading={!d} value={(d?.subscriptions.active ?? 0) + (d?.subscriptions.trialing ?? 0)} context={d ? `${d.subscriptions.active ?? 0} paid · ${d.subscriptions.trialing ?? 0} trial · ${d.subscriptions.grace_period ?? 0} grace` : ""} to="/admin/payments" />
         <StatCard label="Websites / connections" icon={IconServer} loading={!d} value={`${d?.websites ?? 0} / ${sum(d?.hosting_accounts)}`} context={d ? `${(d.hosting_accounts.auth_failed ?? 0) + (d.hosting_accounts.error ?? 0) + (d.hosting_accounts.disconnected ?? 0)} failing connections` : ""} />
-        <StatCard label="Jobs (24h)" icon={IconDatabase} loading={!d} value={sum(d?.jobs_24h)} context={d ? `${d.jobs_24h.failed ?? 0} failed · ${d.jobs_24h.partial ?? 0} partial` : ""} to="/ops/jobs" />
+        <StatCard label="Jobs (24h)" icon={IconDatabase} loading={!d} value={sum(d?.jobs_24h)} context={d ? `${d.jobs_24h.failed ?? 0} failed · ${d.jobs_24h.partial ?? 0} partial` : ""} to="/admin/jobs" />
       </SimpleGrid>
       <Grid>
         <Grid.Col span={{ base: 12, md: 6 }}>
@@ -123,6 +123,20 @@ export function CustomersPage() {
     onSuccess: () => { setTarget(null); setReason(""); list.refetch(); },
     onError,
   });
+  // Plans paid outside online checkout (invoice, bank transfer, contract).
+  const [planTarget, setPlanTarget] = useState<TenantRow | null>(null);
+  const [planForm, setPlanForm] = useState({ plan_key: "business", months: 12, reference: "", note: "" });
+  const plans = useQuery({ queryKey: ["admin-plans"], queryFn: () => api.get<{ key: string; name: string; is_active: boolean }[]>("/admin/plans"), enabled: !!planTarget, retry: false });
+  const activate = useMutation({
+    mutationFn: () => api.post<{ current_period_end: string }>(`/admin/tenants/${planTarget?.id}/subscription`, { ...planForm, note: planForm.note || null, confirm: true }),
+    onSuccess: (r) => {
+      notifications.show({ color: "secure", title: "Plan activated", message: `${planTarget?.name} is active until ${fmtDateTime(r.current_period_end)}.` });
+      setPlanTarget(null);
+      setPlanForm({ plan_key: "business", months: 12, reference: "", note: "" });
+      list.refetch();
+    },
+    onError,
+  });
   return (
     <>
       <PageHeader title="Customers" description="Organisations using CyberWatch. Suspension pauses monitoring and blocks changes without deleting data." />
@@ -147,7 +161,12 @@ export function CustomersPage() {
             { key: "usage", header: "Usage", render: (t) => <Text size="xs">{t.websites} sites · {t.hosting_accounts} hosts · {t.members} users</Text>, visibleFrom: "md" },
             { key: "inc", header: "Open incidents", render: (t) => <Text size="sm">{t.open_incidents}</Text>, visibleFrom: "sm" },
             { key: "created", header: "Created", render: (t) => <Text size="sm">{fmtDateTime(t.created_at)}</Text>, visibleFrom: "lg" },
-            { key: "x", header: "", render: (t) => can("platform:tenants:manage") && <Button size="xs" variant="subtle" onClick={() => { setTarget(t); setNewStatus(t.status === "active" ? "suspended" : "active"); }}>Change status</Button> },
+            { key: "x", header: "", render: (t) => can("platform:tenants:manage") && (
+              <Group gap={4} wrap="nowrap">
+                <Button size="xs" variant="subtle" onClick={() => setPlanTarget(t)}>Activate plan</Button>
+                <Button size="xs" variant="subtle" onClick={() => { setTarget(t); setNewStatus(t.status === "active" ? "suspended" : "active"); }}>Change status</Button>
+              </Group>
+            ) },
           ]}
         />
       </Card>
@@ -157,6 +176,19 @@ export function CustomersPage() {
           <Textarea label="Reason (recorded in the audit trail)" required description={minCharsHint(reason, 5)} value={reason} onChange={(e) => setReason(e.currentTarget.value)} />
           <Alert color="amber" variant="light">Customer data is retained. Suspended organisations are read-only and monitoring pauses; deactivated organisations cannot sign in.</Alert>
           <Button color={newStatus === "active" ? "cyber" : "threat"} disabled={reason.length < 5} loading={change.isPending} onClick={() => change.mutate()}>Confirm change</Button>
+        </Stack>
+      </Modal>
+      <Modal opened={!!planTarget} onClose={() => setPlanTarget(null)} title={`Activate plan: ${planTarget?.name}`}>
+        <Stack>
+          <Text size="sm" c="dimmed">
+            Record a payment received outside online checkout (invoice, bank transfer, contract). The plan runs for the chosen
+            term and is not renewed automatically; recording the next payment for the same plan extends it from its end date.
+          </Text>
+          <Select label="Plan" data={(plans.data ?? []).filter((p) => p.is_active).map((p) => ({ value: p.key, label: p.name }))} value={planForm.plan_key} onChange={(v) => setPlanForm({ ...planForm, plan_key: v ?? "business" })} />
+          <NumberInput label="Term (months)" min={1} max={36} value={planForm.months} onChange={(v) => setPlanForm({ ...planForm, months: Number(v) || 1 })} />
+          <TextInput label="Payment reference" required description={minCharsHint(planForm.reference, 3, "Invoice or transfer reference; recorded in the audit trail.")} placeholder="e.g. INV-2026-014" value={planForm.reference} onChange={(e) => setPlanForm({ ...planForm, reference: e.currentTarget.value })} />
+          <Textarea label="Note (optional)" value={planForm.note} onChange={(e) => setPlanForm({ ...planForm, note: e.currentTarget.value })} />
+          <Button disabled={planForm.reference.trim().length < 3 || !planForm.plan_key} loading={activate.isPending} onClick={() => activate.mutate()}>Activate plan</Button>
         </Stack>
       </Modal>
     </>

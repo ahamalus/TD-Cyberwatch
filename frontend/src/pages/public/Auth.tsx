@@ -135,7 +135,7 @@ export function LoginPage() {
               <TextInput label="Recovery code" value={code} onChange={(e) => setCode(e.currentTarget.value)} autoComplete="one-time-code" />
             ) : (
               <Center>
-                <PinInput length={6} type="number" oneTimeCode value={code} onChange={setCode} aria-label="Authentication code" autoFocus />
+                <PinInput length={6} type="number" oneTimeCode value={code} onChange={setCode} ariaLabel="Authentication code" autoFocus />
               </Center>
             )}
             <Button type="submit" loading={busy} fullWidth disabled={code.length < 6}>
