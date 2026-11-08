@@ -42,16 +42,34 @@ ufw allow 443/udp
 ufw allow from "$PRIVATE_NET" to any port 22 proto tcp
 ufw --force enable
 
-install -d -m 0755 /var/log/caddy
-chown caddy:caddy /var/log/caddy
+# Another web server (nginx, apache, a container) on 80/443 would stop Caddy from starting.
+OTHERS=$(ss -ltnpH '( sport = :80 or sport = :443 )' | grep -v '"caddy"' || true)
+if [ -n "$OTHERS" ]; then
+  echo "ERROR: another program is using port 80 or 443 on this VM:"
+  echo "$OTHERS"
+  echo "The edge VM should only run Caddy. Stop that program first, e.g.:  sudo systemctl disable --now nginx"
+  exit 1
+fi
 
 echo "==> Validating $SOURCE"
+install -d -m 0755 /var/log/caddy
 caddy validate --adapter caddyfile --config "$SOURCE"
+# Validation runs as root and may create the log file; the service runs as "caddy" and must own it.
+chown -R caddy:caddy /var/log/caddy
 install -m 0644 "$SOURCE" /etc/caddy/Caddyfile
 systemctl enable caddy >/dev/null
-if systemctl is-active --quiet caddy; then systemctl reload caddy; else systemctl start caddy; fi
+if systemctl is-active --quiet caddy; then systemctl reload caddy; else systemctl restart caddy; fi
+sleep 3
+if ! systemctl is-active --quiet caddy; then
+  echo "ERROR: Caddy did not start. Last messages:"
+  journalctl -u caddy -n 15 --no-pager
+  exit 1
+fi
 
 echo "==> Edge is serving:"
-grep -E '^[a-zA-Z0-9.-]+\.[a-z]{2,}( |,|\{)' /etc/caddy/Caddyfile | sed 's/[ {].*//' | sed 's/^/    https:\/\//'
+# Site lines look like "name {" or "name, other {"; skip the global block, snippets and the plain-HTTP catch-all.
+grep -E '^[^[:space:]#({][^{]*\{$' /etc/caddy/Caddyfile | grep -v '^http://' | sed 's/[[:space:]]*{$//' |
+  tr ',' '\n' | sed 's/^[[:space:]]*//; s#^https://##; s#^#    https://#'
+grep -qE '^http://[[:space:]]*\{' /etc/caddy/Caddyfile && echo "    http://<any other name or IP>  (plain HTTP catch-all)"
 echo "Certificates are issued automatically once each name's DNS points at the public IP."
 echo "Watch progress with:  journalctl -u caddy -f"
