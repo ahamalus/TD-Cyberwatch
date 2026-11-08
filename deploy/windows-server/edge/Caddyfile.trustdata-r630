@@ -1,10 +1,18 @@
-# Edge VM (192.168.1.241) for the Trust Data R630: every site on public IP 98.97.76.237.
+# Edge VM (192.168.1.241) for the Trust Data R630.
 # Apply with:  sudo bash install-edge.sh Caddyfile.trustdata-r630
-# The router is switched to forward 80/443 here only AFTER this file serves every site.
-# Caddy obtains a Let's Encrypt certificate for each name below once its DNS points at 98.97.76.237.
+#
+# Public access to CyberWatch comes through a Cloudflare Tunnel (no router port forwarding):
+#   Internet -> Cloudflare (HTTPS) -> cloudflared on this VM -> Caddy 127.0.0.1:8088 -> CyberWatch
+# Office access: https://192.168.1.241 (Caddy's own certificate).
+# Jitsi, APC and adsgcsc are NOT served by this edge; the router keeps sending their traffic as before.
 
 {
 	email team@trustdata.ng
+	servers 127.0.0.1:8088 {
+		# Only cloudflared (on this VM) connects here, so Cloudflare's visitor-IP header can be trusted.
+		trusted_proxies static 127.0.0.1/32 ::1/128
+		client_ip_headers Cf-Connecting-Ip
+	}
 }
 
 (common) {
@@ -22,11 +30,15 @@
 	}
 }
 
-# TrustData CyberWatch VM
-cyberwatch.trustdata.ng {
+# Cloudflare Tunnel entrance for https://cyberwatch.trustdata.ng (Cloudflare holds the certificate).
+# Point the tunnel's public hostname at:  http://localhost:8088
+http://:8088 {
+	bind 127.0.0.1
 	import common
 	reverse_proxy 192.168.1.242:8080 {
-		header_up X-Forwarded-Proto {scheme}
+		# Replace any client-supplied value with the visitor IP vouched for by Cloudflare.
+		header_up X-Forwarded-For {client_ip}
+		header_up X-Forwarded-Proto https
 	}
 }
 
@@ -43,27 +55,23 @@ https://192.168.1.241 {
 	}
 }
 
-# IIS site "apc-campaign" on the Windows host (unchanged, port 8081)
-apcadamawa.com.ng, www.apcadamawa.com.ng {
-	import common
-	reverse_proxy 192.168.1.96:8081
-}
-
-# Jitsi Meet VM (Adamawa e-Justice). Its web page goes through the edge, which holds the public
-# certificate; the VM's own certificate is not checked inside the office network.
-# Media (UDP 10000) keeps going straight from the router to 192.168.1.240.
-meet.adamawastate.gov.ng {
-	import common
-	reverse_proxy https://192.168.1.240:443 {
-		transport http {
-			tls_insecure_skip_verify
-		}
-	}
-}
-
-# IIS site "adsgcsc" has no domain: it is opened as http://98.97.76.237 and stays plain HTTP.
-# This catch-all only answers HTTP requests for names not listed above (the named sites
-# above still redirect to HTTPS and still pass their certificate checks).
-http:// {
-	reverse_proxy 192.168.1.96:80
-}
+# ---- Only if the router ever forwards ports 80/443 to this VM instead of using the tunnel:
+# remove the "#" from the blocks below (each needs its DNS pointing at the public IP).
+#
+# apcadamawa.com.ng, www.apcadamawa.com.ng {
+# 	import common
+# 	reverse_proxy 192.168.1.96:8081
+# }
+#
+# meet.adamawastate.gov.ng {
+# 	import common
+# 	reverse_proxy https://192.168.1.240:443 {
+# 		transport http {
+# 			tls_insecure_skip_verify
+# 		}
+# 	}
+# }
+#
+# http:// {
+# 	reverse_proxy 192.168.1.96:80
+# }

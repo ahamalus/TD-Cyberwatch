@@ -106,3 +106,41 @@ sudo bash deploy/scripts/healthcheck.sh
 Customers paying by invoice or bank transfer: go to **Platform Administration → Customers → Activate plan** and record
 the payment reference. The plan runs for the chosen term; record the next payment before it ends to extend it.
 
+## Public access through Cloudflare Tunnel (no port forwarding)
+
+Use this when the internet connection cannot forward ports reliably, or its public IP can change (e.g. Starlink).
+`cloudflared` on the edge VM connects out to Cloudflare; Cloudflare serves `https://cyberwatch.trustdata.ng`.
+The router and the other sites (Jitsi, APC, adsgcsc) are not touched.
+
+```
+Visitor -> Cloudflare (HTTPS) -> cloudflared (edge VM) -> Caddy 127.0.0.1:8088 -> CyberWatch 192.168.1.242:8080
+```
+
+Caddy passes CyberWatch the visitor IP from Cloudflare's `Cf-Connecting-Ip` header. It trusts that header
+only on the local tunnel entrance, so visitors cannot forge their address for rate limits or the audit trail.
+
+1. **Move the domain's DNS to Cloudflare.**
+   - Create a free Cloudflare account and choose **Add a domain** → `trustdata.ng` → Free plan.
+   - Compare the imported records with cPanel → Zone Editor. Check the MX, `mail`, SPF/DKIM/DMARC TXT records (`default._domainkey`), `www`, `webmail` and `cpanel` especially.
+   - Set every imported record to **DNS only** (grey cloud) so the website and email keep working exactly as before.
+   - At go54, turn **DNSSEC** off if it is on. Then replace the name servers `ns1/ns2.wghservers.com` with the two Cloudflare ones.
+   - Wait for Cloudflare to report the domain as **Active**.
+2. **Edge VM:** apply the config and install the tunnel:
+   ```bash
+   cd ~/TD-Cyberwatch && git pull && cd deploy/windows-server/edge
+   sudo bash install-edge.sh Caddyfile.trustdata-r630
+   ```
+3. **Cloudflare dashboard → Zero Trust → Networks → Tunnels → Create a tunnel** (type *Cloudflared*), named e.g. `trustdata-edge`.
+   Copy the token shown in the install command, then on the edge VM run:
+   ```bash
+   sudo bash install-cloudflared.sh
+   ```
+   Paste the token when asked; it is hidden and not stored in the shell history.
+4. **Public hostname:** in the Cloudflare DNS settings, delete the `cyberwatch` A record first. Then add the tunnel's public hostname:
+   - Subdomain `cyberwatch`
+   - Domain `trustdata.ng`
+   - Service **HTTP**, URL `127.0.0.1:8088`
+5. **Check from a phone on mobile data:** open `https://cyberwatch.trustdata.ng`.
+
+DNS changes for trustdata.ng are made in Cloudflare from now on. Edits in the cPanel Zone Editor no longer take effect.
+

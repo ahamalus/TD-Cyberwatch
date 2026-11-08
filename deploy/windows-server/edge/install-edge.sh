@@ -71,5 +71,6 @@ echo "==> Edge is serving:"
 grep -E '^[^[:space:]#({][^{]*\{$' /etc/caddy/Caddyfile | grep -v '^http://' | sed 's/[[:space:]]*{$//' |
   tr ',' '\n' | sed 's/^[[:space:]]*//; s#^https://##; s#^#    https://#'
 grep -qE '^http://[[:space:]]*\{' /etc/caddy/Caddyfile && echo "    http://<any other name or IP>  (plain HTTP catch-all)"
+grep -qE '^http://:8088[[:space:]]*\{' /etc/caddy/Caddyfile && echo "    http://127.0.0.1:8088  (Cloudflare Tunnel entrance, this VM only)"
 echo "Certificates are issued automatically once each name's DNS points at the public IP."
 echo "Watch progress with:  journalctl -u caddy -f"
