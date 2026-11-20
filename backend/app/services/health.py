@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import shutil
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 import redis
@@ -85,8 +85,14 @@ def system_health(db: Session) -> dict[str, Any]:
         alerts.append({"severity": "high", "message": f"Disk usage at {disk['used_pct']}%."})
     if backup is None:
         alerts.append({"severity": "medium", "message": "No backup status has been reported."})
-    elif backup.updated_at < now - timedelta(hours=36):
-        alerts.append({"severity": "high", "message": "Last reported backup is older than 36 hours."})
+    else:
+        last_ok = (backup.value or {}).get("last_success_at")
+        last_ok_at = datetime.fromisoformat(last_ok) if last_ok else (
+            backup.updated_at if (backup.value or {}).get("status") == "ok" else None)
+        if last_ok_at is None or last_ok_at < now - timedelta(hours=36):
+            alerts.append({"severity": "high", "message": "No successful backup in the last 36 hours."})
+        elif (backup.value or {}).get("status") != "ok":
+            alerts.append({"severity": "medium", "message": "The most recent backup failed."})
     return {
         "checked_at": now,
         "database": db_h,

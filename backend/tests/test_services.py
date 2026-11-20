@@ -795,3 +795,33 @@ def test_email_health_reports_missing_configuration(monkeypatch):
     with platform_session() as db:
         ok, name, detail = cli._email_health(db)
     assert not ok and name == "email" and "not configured" in detail
+
+
+def test_backup_health_tracks_last_success_across_failures(monkeypatch):
+    from datetime import datetime
+
+    from app import cli
+    from app.models import PlatformSetting
+
+    with platform_session() as db:
+        ok, _, detail = cli._backup_health(db)
+        assert not ok and "no backup has run" in detail
+
+    cli.cmd_report_backup("ok", "/var/backups/cyberwatch/db-1.dump.age")
+    with platform_session() as db:
+        assert cli._backup_health(db)[0] is True
+
+    # A failure keeps the last success time and turns the check red.
+    cli.cmd_report_backup("failed", "/var/backups/cyberwatch/db-2.dump.age")
+    with platform_session() as db:
+        ok, _, detail = cli._backup_health(db)
+        assert not ok and "latest backup FAILED" in detail
+        row = db.get(PlatformSetting, "backup_status")
+        assert row.value["last_success_at"] and row.value["status"] == "failed"
+        # Two days without a success: red even if nothing failed since.
+        old = (utcnow() - timedelta(hours=48)).isoformat()
+        row.value = {**row.value, "status": "ok", "last_success_at": old}
+        db.commit()
+        ok, _, detail = cli._backup_health(db)
+        assert not ok and "48 hours ago" in detail
+        assert datetime.fromisoformat(old)

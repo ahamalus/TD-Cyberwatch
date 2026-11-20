@@ -13,7 +13,8 @@ cd "$APP_DIR"
 [ "$(id -u)" -eq 0 ] || { echo "Run with sudo."; exit 1; }
 [ -f .env ] || { echo "$APP_DIR/.env not found."; exit 1; }
 
-envval() { grep -E "^$1=" .env | head -n 1 | cut -d= -f2- | sed "s/^['\"]//; s/['\"]$//"; }
+# Value of KEY in .env without surrounding quotes; empty (not an error) when the key is absent.
+envval() { { grep -E "^$1=" .env || true; } | head -n 1 | cut -d= -f2- | sed "s/^['\"]//; s/['\"]$//"; }
 setenv() {  # setenv KEY VALUE: replace the line or append it
   local key=$1 val=$2 tmp
   tmp=$(mktemp)
@@ -27,9 +28,9 @@ ask() {  # ask VAR "Question" DEFAULT
 }
 
 echo "Outgoing email for CyberWatch (press Enter to accept the value in brackets)."
-ask SMTP_HOST "SMTP server" "$(envval CW_SMTP_HOST | sed 's/^$/smtppro.zoho.com/')"
-ask SMTP_PORT "Port (587 = STARTTLS, 465 = SSL)" "$(envval CW_SMTP_PORT | sed 's/^$/587/')"
-ask SMTP_USER "Mailbox address used to sign in" "$(envval CW_SMTP_USERNAME | sed 's/^$/alerts@trustdata.ng/')"
+ask SMTP_HOST "SMTP server" "$(d=$(envval CW_SMTP_HOST); echo "${d:-smtppro.zoho.com}")"
+ask SMTP_PORT "Port (587 = STARTTLS, 465 = SSL)" "$(d=$(envval CW_SMTP_PORT); echo "${d:-587}")"
+ask SMTP_USER "Mailbox address used to sign in" "$(d=$(envval CW_SMTP_USERNAME); echo "${d:-alerts@trustdata.ng}")"
 if [ -z "${SMTP_PASSWORD:-}" ]; then
   read -rsp "Password for $SMTP_USER (Zoho: an application-specific password; input hidden): " SMTP_PASSWORD; echo
 fi

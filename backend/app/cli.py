@@ -93,7 +93,11 @@ def cmd_rotate_credentials() -> None:
 def cmd_report_backup(status: str, location: str) -> None:
     with platform_session() as db:
         row = db.get(PlatformSetting, "backup_status")
-        value = {"status": status, "location": location}
+        now = utcnow().isoformat()
+        # Keep the time of the last *successful* backup across failures, so alerts fire when backups stop working.
+        previous_success = (row.value or {}).get("last_success_at") if row else None
+        value = {"status": status, "location": location, "reported_at": now,
+                 "last_success_at": now if status == "ok" else previous_success}
         if row is None:
             db.add(PlatformSetting(key="backup_status", value=value, description="Reported by the backup job."))
         else:
@@ -169,6 +173,24 @@ def _email_health(db) -> tuple[bool, str, str]:
     return True, "email", f"via {s.smtp_host}:{s.smtp_port} as {sender}; 24h: {sent} sent, {failed} failed"
 
 
+def _backup_health(db) -> tuple[bool, str, str]:
+    from datetime import datetime
+
+    row = db.get(PlatformSetting, "backup_status")
+    if row is None:
+        return False, "backup", "no backup has run yet (deploy/scripts/backup.sh, see docs/OPERATIONS.md)"
+    v = row.value or {}
+    last_ok = v.get("last_success_at") or (row.updated_at.isoformat() if v.get("status") == "ok" else None)
+    if not last_ok:
+        return False, "backup", "no successful backup recorded"
+    age_h = (utcnow() - datetime.fromisoformat(last_ok)).total_seconds() / 3600
+    if age_h > 36:
+        return False, "backup", f"last successful backup {age_h:.0f} hours ago"
+    if v.get("status") != "ok":
+        return False, "backup", f"latest backup FAILED (last success {age_h:.0f}h ago)"
+    return True, "backup", f"last successful backup {age_h:.1f} hours ago"
+
+
 def cmd_health() -> None:
     """Print one PASS/FAIL line per component; exit 1 if anything fails (for scripts and cron)."""
     from datetime import timedelta
@@ -200,6 +222,7 @@ def cmd_health() -> None:
         res = audit.verify_chain(db)
         checks.append((res.valid, "audit trail", f"{res.events_checked} events, chain {'intact' if res.valid else 'BROKEN at ' + str(res.first_invalid_seq)}"))
         checks.append(_email_health(db))
+        checks.append(_backup_health(db))
         disk = h.get("disk", {})
         if "used_pct" in disk:
             checks.append((disk["used_pct"] < 85, "storage disk", f"{disk['used_pct']}% used"))

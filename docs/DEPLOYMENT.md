@@ -72,13 +72,46 @@ added by hand — see migration 0001).
 
 ## 5. Backup and restore
 
-* `deploy/scripts/backup.sh` (cron nightly): encrypted `pg_dump` + storage archive with `age`, SHA-256
-  manifest, retention, and reports status to System Health. Copy backups off-site.
-* Back up `.env` (especially `CW_CREDENTIAL_KEYS`) **separately** — without the key, stored hosting
-  credentials cannot be decrypted (customers would need to re-enter them).
-* Restore: `AGE_IDENTITY=key.txt deploy/scripts/restore.sh <dump>` (stops services, restores, migrates,
-  verifies the audit chain, restarts). Test a restore into a scratch environment at least quarterly and
-  record the result.
+**Set up (once, on the CyberWatch server):**
+```bash
+sudo bash /opt/cyberwatch/deploy/scripts/install-backups.sh
+```
+The script does the following:
+- Creates an `age` key pair and shows the **private key once**, for you to store in a password manager and on offline media. It then deletes the key from the server; only the public key remains.
+- Schedules `backup.sh` nightly at 02:17 UTC.
+- Runs the first backup.
+
+**What `backup.sh` does:**
+- Writes an encrypted `pg_dump` and an encrypted archive of the reports/evidence storage to `/var/backups/cyberwatch`, with a SHA-256 manifest per set.
+- Checks every step. A failed or empty dump is reported as **failed**, and partial files are removed.
+- Removes old sets only after a successful run: sets older than 30 days are deleted, but the newest 7 are always kept.
+- Records the result in CyberWatch. `healthcheck.sh` and System Health go red when the latest backup failed, or when no backup has succeeded for 36 hours.
+
+**Copy off the server (daily).** On the Windows Hyper-V host, as administrator:
+```powershell
+powershell -ExecutionPolicy Bypass -File .\deploy\windows-server\Pull-CyberWatchBackups.ps1 -Install
+```
+This creates a scheduled task (06:30 daily). It copies new encrypted sets to `C:\CyberWatch-Backups`, verifies the checksums, keeps 60 days, and logs to `C:\ProgramData\CyberWatch\backup-pull.log`. For disaster recovery, also keep a periodic copy away from the building (cloud storage or a rotated USB disk).
+
+**Restore drill (quarterly, and after major upgrades).** This is non-destructive:
+```bash
+# copy the private key to the server for the drill only
+sudo AGE_IDENTITY=/root/backup-key.txt bash /opt/cyberwatch/deploy/scripts/restore-drill.sh
+sudo shred -u /root/backup-key.txt
+```
+It checks the checksums, restores the newest dump into a temporary database with no network, counts the records,
+verifies the audit hash chain and reads the storage archive. Record the date and result in the log below.
+
+**Real restore** (replaces the live database):
+```bash
+AGE_IDENTITY=key.txt deploy/scripts/restore.sh <db-*.dump.age>
+```
+It stops the services, restores, migrates, verifies the audit chain and restarts. Back up `.env`, especially
+`CW_CREDENTIAL_KEYS`, **separately**. Without it, stored hosting credentials cannot be decrypted after a restore.
+
+| Date | Backup set | Drill result | Duration | By |
+|---|---|---|---|---|
+| 2026-11-20 | test stack | PASSED (checksums, restore, audit chain, storage) | 9 s | development check |
 
 ## 6. Upgrade and rollback
 

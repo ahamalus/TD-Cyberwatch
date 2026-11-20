@@ -5,6 +5,9 @@
 - **Ops → Worker Health**: worker heartbeats (< 60 s), scheduler heartbeat (< 3 min), queue depth, disk, backup age.
 - `python -m app.cli verify-audit` (cron) — non-zero exit means the audit chain was altered: escalate.
 
+- **Backups**: `sudo bash /opt/cyberwatch/deploy/scripts/healthcheck.sh` shows a `backup` line. The Windows host log
+  `C:\ProgramData\CyberWatch\backup-pull.log` shows the daily off-server copy. Setup and drills: DEPLOYMENT.md §5.
+
 ## Common problems
 
 | Symptom | Likely cause | Action |
