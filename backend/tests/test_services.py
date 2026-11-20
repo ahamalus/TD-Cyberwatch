@@ -704,3 +704,94 @@ def test_broker_outage_keeps_job_queued_and_recovery_resends(alice):
     DISPATCHED.clear()
     assert jobs.recover_stale_jobs()["redispatched"] == 1
     assert [d[0] for d in DISPATCHED] == [job_id]
+
+
+class _FakeSMTP:
+    """Records what send_email does instead of talking to a mail server."""
+
+    instances: list = []
+    fail_with: Exception | None = None
+
+    def __init__(self, host, port, timeout=None, context=None):
+        self.host, self.port, self.context = host, port, context
+        self.tls = self.login_args = self.sent = None
+        _FakeSMTP.instances.append(self)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def starttls(self, context=None):
+        self.tls = "starttls"
+
+    def login(self, user, password):
+        self.login_args = (user, password)
+
+    def send_message(self, msg):
+        if _FakeSMTP.fail_with:
+            raise _FakeSMTP.fail_with
+        self.sent = msg
+        return {}
+
+
+@pytest.fixture
+def fake_smtp(monkeypatch):
+    import smtplib
+
+    from pydantic import SecretStr
+
+    s = get_settings()
+    monkeypatch.setattr(s, "smtp_host", "smtppro.zoho.com")
+    monkeypatch.setattr(s, "smtp_username", "alerts@trustdata.example.com")
+    monkeypatch.setattr(s, "smtp_password", SecretStr("app-specific-password"))
+    monkeypatch.setattr(s, "email_from", "TrustData CyberWatch <alerts@trustdata.example.com>")
+    monkeypatch.setattr(smtplib, "SMTP", _FakeSMTP)
+    monkeypatch.setattr(smtplib, "SMTP_SSL", _FakeSMTP)
+    _FakeSMTP.instances, _FakeSMTP.fail_with = [], None
+    return s
+
+
+def test_email_has_date_and_message_id_and_uses_starttls(fake_smtp, monkeypatch):
+    from app.services.notifications import send_email
+
+    monkeypatch.setattr(fake_smtp, "smtp_port", 587)
+    mid = send_email("owner@customer.example.com", "Subject", "Body")
+    smtp = _FakeSMTP.instances[-1]
+    assert smtp.tls == "starttls" and smtp.context is None
+    assert smtp.login_args == ("alerts@trustdata.example.com", "app-specific-password")
+    assert smtp.sent["Date"] and smtp.sent["Message-ID"] == mid and mid.endswith("@trustdata.example.com>")
+
+
+def test_email_port_465_uses_implicit_tls(fake_smtp, monkeypatch):
+    from app.services.notifications import send_email
+
+    monkeypatch.setattr(fake_smtp, "smtp_port", 465)
+    send_email("owner@customer.example.com", "Subject", "Body")
+    smtp = _FakeSMTP.instances[-1]
+    assert smtp.context is not None and smtp.tls is None
+
+
+def test_email_server_refusal_is_explained(fake_smtp, monkeypatch, capsys):
+    import smtplib
+
+    from app import cli
+    from app.services.notifications import DeliveryError, send_email
+
+    monkeypatch.setattr(fake_smtp, "smtp_port", 587)
+    _FakeSMTP.fail_with = smtplib.SMTPSenderRefused(553, b"Sender is not allowed to relay emails", "x@y")
+    with pytest.raises(DeliveryError, match="553 Sender is not allowed to relay emails"):
+        send_email("owner@customer.example.com", "Subject", "Body")
+    with pytest.raises(SystemExit) as exc:
+        cli.cmd_send_test_email("owner@customer.example.com")
+    assert "CW_EMAIL_FROM must use the same address" in str(exc.value)
+
+
+def test_email_health_reports_missing_configuration(monkeypatch):
+    from app import cli
+
+    monkeypatch.setattr(get_settings(), "smtp_host", None)
+    with platform_session() as db:
+        ok, name, detail = cli._email_health(db)
+    assert not ok and name == "email" and "not configured" in detail

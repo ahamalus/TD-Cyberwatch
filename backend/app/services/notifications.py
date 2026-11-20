@@ -25,6 +25,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from email.message import EmailMessage
+from email.utils import formatdate, make_msgid, parseaddr
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -284,6 +285,12 @@ class ProviderUnconfigured(Exception):
     pass
 
 
+def _smtp_detail(exc: smtplib.SMTPResponseException) -> str:
+    """The server's own reply (e.g. Zoho's "553 Sender is not allowed to relay emails"), shortened."""
+    reply = exc.smtp_error.decode("utf-8", "replace") if isinstance(exc.smtp_error, bytes) else str(exc.smtp_error)
+    return f"{exc.smtp_code} {' '.join(reply.split())[:160]}"
+
+
 def send_email(to: str, subject: str, body: str) -> str:
     s = get_settings()
     if not s.smtp_host:
@@ -292,10 +299,18 @@ def send_email(to: str, subject: str, body: str) -> str:
     msg["From"] = s.email_from
     msg["To"] = to
     msg["Subject"] = subject
+    # Date and Message-ID are expected by receiving servers; mail without them scores as spam.
+    msg["Date"] = formatdate(localtime=False)
+    sender_domain = parseaddr(s.email_from)[1].rpartition("@")[2] or None
+    msg["Message-ID"] = make_msgid(domain=sender_domain)
     msg.set_content(body)
+    # Port 465 is implicit TLS; other ports use STARTTLS unless it is switched off.
+    implicit_tls = s.smtp_port == 465
     try:
-        with smtplib.SMTP(s.smtp_host, s.smtp_port, timeout=20) as smtp:
-            if s.smtp_starttls:
+        smtp_cls = smtplib.SMTP_SSL if implicit_tls else smtplib.SMTP
+        kwargs: dict[str, Any] = {"context": ssl.create_default_context()} if implicit_tls else {}
+        with smtp_cls(s.smtp_host, s.smtp_port, timeout=20, **kwargs) as smtp:
+            if s.smtp_starttls and not implicit_tls:
                 smtp.starttls(context=ssl.create_default_context())
             if s.smtp_username and s.smtp_password:
                 smtp.login(s.smtp_username, s.smtp_password.get_secret_value())
@@ -303,12 +318,14 @@ def send_email(to: str, subject: str, body: str) -> str:
     except smtplib.SMTPRecipientsRefused as exc:
         raise DeliveryError("Recipient address was refused.", permanent=True) from exc
     except smtplib.SMTPAuthenticationError as exc:
-        raise DeliveryError("SMTP authentication failed.") from exc
+        raise DeliveryError(f"SMTP authentication failed ({_smtp_detail(exc)}).") from exc
+    except smtplib.SMTPResponseException as exc:
+        raise DeliveryError(f"SMTP server refused the message ({_smtp_detail(exc)}).") from exc
     except (smtplib.SMTPException, OSError) as exc:
-        raise DeliveryError(f"SMTP delivery failed ({type(exc).__name__}).") from exc
+        raise DeliveryError(f"SMTP delivery failed ({type(exc).__name__}: {str(exc)[:120]}).") from exc
     if refused:
         raise DeliveryError("Recipient address was refused.", permanent=True)
-    return msg.get("Message-ID") or ""
+    return msg["Message-ID"]
 
 
 def send_whatsapp_template(to: str, template_name: str, language: str, body_params: list[str]) -> str:

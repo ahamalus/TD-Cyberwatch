@@ -49,7 +49,42 @@ Failures: HTTP 429/5xx retry with backoff (max 5 attempts); 4xx are permanent; o
 
 ## Email (SMTP)
 
-Set `CW_SMTP_HOST`, `CW_SMTP_PORT` (587), `CW_SMTP_USERNAME`, `CW_SMTP_PASSWORD`, `CW_SMTP_STARTTLS=true`,
-`CW_EMAIL_FROM`. Any transactional provider with SMTP (e.g. a Nigerian-hosted mail server, Amazon SES,
-Postmark, Mailgun) works. Publish SPF, DKIM and DMARC for the sender domain. Use **Notifications → Send
-test** to confirm delivery; the result appears in Delivery history.
+Settings: `CW_SMTP_HOST`, `CW_SMTP_PORT`, `CW_SMTP_USERNAME`, `CW_SMTP_PASSWORD`, `CW_SMTP_STARTTLS` and `CW_EMAIL_FROM`.
+- **Port 587** uses STARTTLS.
+- **Port 465** uses implicit TLS automatically.
+- Any provider with authenticated SMTP works (Zoho Mail, Microsoft 365, Amazon SES, Postmark and others).
+
+On a server, set everything with the guided script. It asks for the values, hides the password, keeps a backup of
+`.env`, restarts the API and the notification worker, and sends a test email:
+```bash
+sudo bash /opt/cyberwatch/deploy/scripts/configure-email.sh
+```
+At any time afterwards:
+- `docker compose exec api python -m app.cli send-test-email you@example.com` sends one message and explains any failure.
+- `deploy/scripts/healthcheck.sh` shows an `email` line (configured, plus 24-hour sent/failed counts).
+
+### Zoho Mail (company domain)
+1. Create a mailbox for system mail, e.g. `alerts@yourdomain`. Zoho only relays mail *from* the signed-in mailbox or
+   its aliases, so `CW_EMAIL_FROM` uses the same address. The script does this automatically.
+2. If the mailbox uses two-factor sign-in, create an **application-specific password**:
+   Zoho Accounts → Security → App Passwords.
+3. Make sure SMTP access is allowed for the mailbox (Zoho Mail → Settings → Mail Accounts → IMAP/POP/SMTP).
+4. Choose the server for your Zoho data centre, which matches your MX records:
+   - `mx.zoho.com` → `smtppro.zoho.com`
+   - `mx.zoho.eu` → `smtppro.zoho.eu`
+   - `mx.zoho.in` → `smtppro.zoho.in`
+5. Run `configure-email.sh` and accept the defaults (`smtppro.zoho.com`, port 587).
+
+### Deliverability (keep alerts out of spam)
+- **SPF:** the TXT record on the root domain must include Zoho, e.g. `v=spf1 include:zoho.com ~all`.
+  If it already lists other senders (the web host's IP, other services), add `include:zoho.com` to it rather
+  than replacing it.
+- **DKIM:** in Zoho Mail Admin → Domains → *your domain* → Email Configuration → DKIM, add a selector (e.g. `zmail`).
+  Publish the TXT record Zoho shows (`zmail._domainkey`), then click **Verify**. A `default._domainkey` record created by
+  cPanel does not sign Zoho's mail.
+- **DMARC:** start with `v=DMARC1; p=none; rua=mailto:you@yourdomain`. Once SPF and DKIM pass, move to
+  `p=quarantine`.
+- Every message carries `Date` and `Message-ID` headers, which receiving servers expect.
+
+Also use **Notifications → Send test** in the customer portal to confirm delivery to a recipient; the result
+appears in Delivery history.

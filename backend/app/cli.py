@@ -9,6 +9,7 @@
     python -m app.cli demo-data                 # synthetic demo tenant (non-production only)
     python -m app.cli verify-audit              # verify the audit hash chain
     python -m app.cli health                    # PASS/FAIL report of workers, scheduler, queue, audit
+    python -m app.cli send-test-email ADDRESS   # send one email now and explain any SMTP failure
 """
 
 from __future__ import annotations
@@ -110,6 +111,64 @@ def cmd_verify_audit() -> None:
         sys.exit(1)
 
 
+def _email_hint(error: str) -> str:
+    e = error.lower()
+    if "authentication" in e:
+        return ("Check CW_SMTP_USERNAME is the full mailbox address and CW_SMTP_PASSWORD is correct. With two-factor "
+                "sign-in on, Zoho needs an application-specific password, and SMTP access must be allowed for the mailbox.")
+    if "relay" in e or "sender" in e or "553" in e or "550" in e:
+        return "CW_EMAIL_FROM must use the same address as CW_SMTP_USERNAME (or an alias of that mailbox)."
+    if "timeout" in e or "refused" in e or "oserror" in e or "unreachable" in e:
+        return "The server could not reach the SMTP host on that port. Check the host name, or try port 465."
+    return "See docs/INTEGRATIONS.md (Email) for the settings."
+
+
+def cmd_send_test_email(to: str) -> None:
+    from email.utils import parseaddr
+
+    from app.services.notifications import DeliveryError, ProviderUnconfigured, send_email
+
+    s = get_settings()
+    security = "implicit TLS" if s.smtp_port == 465 else ("STARTTLS" if s.smtp_starttls else "NONE (unencrypted)")
+    print(f"SMTP host: {s.smtp_host or '(not set)'}:{s.smtp_port}  security: {security}")
+    print(f"Login:     {s.smtp_username or '(none)'}   From: {s.email_from}")
+    if not parseaddr(to)[1] or "@" not in to:
+        sys.exit("FAILED: give a valid recipient address.")
+    try:
+        message_id = send_email(to, f"{s.product_name}: test email",
+                                f"This is a test email from {s.product_name} ({s.public_base_url}).\n\n"
+                                "If you can read this, alert emails, password resets and invitations will be delivered.\n")
+    except ProviderUnconfigured:
+        sys.exit("FAILED: email is not configured (CW_SMTP_HOST is empty).")
+    except DeliveryError as exc:
+        sys.exit(f"FAILED: {exc}\nHint: {_email_hint(str(exc))}")
+    print(f"SENT: accepted by the SMTP server (Message-ID {message_id}).")
+    print(f"Check the inbox of {to}, including the spam folder.")
+
+
+def _email_health(db) -> tuple[bool, str, str]:
+    from datetime import timedelta
+    from email.utils import parseaddr
+
+    from sqlalchemy import func
+
+    from app.models import Notification
+
+    s = get_settings()
+    sender = parseaddr(s.email_from)[1]
+    if not s.smtp_host:
+        return False, "email", "not configured: alerts and password resets are not sent (deploy/scripts/configure-email.sh)"
+    if sender.endswith((".invalid", "example.com", "example.org")):
+        return False, "email", f"sender address {sender} is a placeholder: set CW_EMAIL_FROM"
+    since = utcnow() - timedelta(hours=24)
+    counts = dict(db.execute(select(Notification.status, func.count()).where(
+        Notification.channel == "email", Notification.created_at >= since).group_by(Notification.status)).all())
+    sent, failed = counts.get("sent", 0), counts.get("failed", 0)
+    if failed and not sent:
+        return False, "email", f"{failed} failed and none sent in 24h: run send-test-email"
+    return True, "email", f"via {s.smtp_host}:{s.smtp_port} as {sender}; 24h: {sent} sent, {failed} failed"
+
+
 def cmd_health() -> None:
     """Print one PASS/FAIL line per component; exit 1 if anything fails (for scripts and cron)."""
     from datetime import timedelta
@@ -140,6 +199,7 @@ def cmd_health() -> None:
         checks.append((stuck == 0, "job queue", "no checks waiting over 20 minutes" if stuck == 0 else f"{stuck} checks waiting over 20 minutes"))
         res = audit.verify_chain(db)
         checks.append((res.valid, "audit trail", f"{res.events_checked} events, chain {'intact' if res.valid else 'BROKEN at ' + str(res.first_invalid_seq)}"))
+        checks.append(_email_health(db))
         disk = h.get("disk", {})
         if "used_pct" in disk:
             checks.append((disk["used_pct"] < 85, "storage disk", f"{disk['used_pct']}% used"))
@@ -168,6 +228,8 @@ def main(argv: list[str]) -> None:
         cmd_verify_audit()
     elif cmd == "health":
         cmd_health()
+    elif cmd == "send-test-email" and len(args) == 1:
+        cmd_send_test_email(args[0])
     elif cmd == "demo-data":
         if not get_settings().is_synthetic_data_allowed:
             sys.exit("Synthetic demo data is only allowed in development, test or demo environments.")

@@ -2,3 +2,4 @@
 .env
 local-credentials.txt
 .ruff_cache/
+.env.bak-*
