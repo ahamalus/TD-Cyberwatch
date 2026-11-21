@@ -240,16 +240,27 @@ function MalwareScannerSection({ scanner }: { scanner: any }) {
   const age = scanner.db_age_hours as number | null | undefined;
   return (
     <Section title="Malware scanner" description="ClamAV checks retrieved file contents; YARA rules flag web-shell code for review.">
-      <HealthBadge state={!scanner.ok ? "failed" : !scanner.db_version || (age ?? 0) > 72 ? "degraded" : "healthy"} />
+      <HealthBadge state={!scanner.ok ? "failed" : !scanner.db_version || (age ?? 0) > 72 || scanner.quarantined_rules?.length ? "degraded" : "healthy"} />
       {scanner.ok ? (
         <KeyValue items={[
           ["Engine", scanner.engine],
           ["Signatures", scanner.db_version ? `${scanner.db_version} · ${age === null || age === undefined ? "age unknown" : `${Math.round(age)} h old`}` : "No official signature database loaded"],
           ["YARA rules", scanner.yara_ok ? `version ${scanner.yara_rules_version}` : "Not loaded"],
+          ["Rule self-test", scanner.selftest?.last_run_at
+            ? `${fmtRelative(scanner.selftest.last_run_at)} · ${scanner.quarantined_rules?.length ? `${scanner.quarantined_rules.length} rule(s) quarantined` : "no rule matches genuine WordPress code"}`
+            : "Not run yet (daily, against official releases of the WordPress versions on monitored sites)"],
         ]} />
       ) : (
         <Text size="sm" c="dimmed" mt="xs">{scanner.error} Files are reported as "not scanned", never as clean.</Text>
       )}
+      {(scanner.quarantined_rules ?? []).map((q: any) => (
+        <Alert key={q.rule} color="amber" mt="sm" icon={<IconAlertTriangle />} title={`Rule quarantined: ${q.rule}`}>
+          <Text size="sm">It matched genuine code in an official release, so its matches are ignored until the rule is fixed (editing the rules ends the quarantine).</Text>
+          {q.examples.map((ex: any) => (
+            <Text key={`${ex.release}:${ex.path}`} size="xs" className="cw-mono" mt={4}>{ex.release} · {ex.path}{ex.excerpt ? ` · “${ex.excerpt}”` : ""}</Text>
+          ))}
+        </Alert>
+      ))}
     </Section>
   );
 }

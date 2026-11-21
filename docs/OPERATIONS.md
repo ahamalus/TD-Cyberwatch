@@ -44,6 +44,19 @@
     heuristics apply as normal.
   - **To turn it off:** set `CW_VENDOR_CHECKSUMS_ENABLED=false`. Versions are still detected.
 
+- **YARA rule self-test (daily, 03:41 UTC)**:
+  - **What it does:** the rules are run over the official downloads (`downloads.wordpress.org`) of the
+    WordPress core and plugin versions found on monitored sites: the 5 most common core versions and 25
+    plugins. Archives are read in memory only.
+  - **When a rule misfires:** a rule that matches any genuine file is quarantined for the current rule set.
+    Its matches are ignored everywhere.
+  - **How admins see it:** the `rule self-test` line of `healthcheck.sh` turns FAIL, System Health shows a
+    high alert, and Ops → Malware lists the matched file and text.
+  - **To fix:** correct the rule in `backend/app/monitoring/yara_rules/webshells.yar`, add a regression
+    sample to `tests/test_malware.py`, then deploy. The new rule set gets a new version, which ends the
+    quarantine; the next self-test checks it again.
+  - **Run it now:** `docker compose exec worker-monitoring python -m app.cli rules-selftest`.
+
 - **Learning from false positives (content approvals)**:
   - **How to approve:** when closing a file finding as a false positive (single or bulk), keep "Don't alert again
     for this exact file content" ticked.

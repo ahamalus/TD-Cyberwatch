@@ -95,6 +95,20 @@ def system_health(db: Session) -> dict[str, Any]:
         elif (backup.value or {}).get("status") != "ok":
             alerts.append({"severity": "medium", "message": "The most recent backup failed."})
     scanner = scanner_status()
+    from app.monitoring.selftest import quarantined_rules
+
+    quarantined = quarantined_rules(db, scanner["yara_rules_version"]) if scanner.get("yara_ok") else {}
+    scanner["quarantined_rules"] = [
+        {"rule": r, "examples": [{"release": m["release"], "path": m["path"], "excerpt": m.get("excerpt", "")}
+                                 for m in ms[:3]]}
+        for r, ms in sorted(quarantined.items())
+    ]
+    scanner["selftest"] = sched.get("rules_selftest")
+    for q in scanner["quarantined_rules"]:
+        ex = q["examples"][0]
+        alerts.append({"severity": "high", "message": (
+            f"YARA rule '{q['rule']}' matched genuine code ({ex['path']} in {ex['release']}) and is quarantined: "
+            "its matches are ignored until the rule is fixed.")})
     if not scanner["ok"]:
         alerts.append({"severity": "high", "message": f"Malware scanner unavailable: {scanner.get('error')}"})
     elif (scanner.get("db_age_hours") or 0) > 72:

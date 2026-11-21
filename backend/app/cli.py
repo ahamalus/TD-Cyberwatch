@@ -10,6 +10,7 @@
     python -m app.cli verify-audit              # verify the audit hash chain
     python -m app.cli health                    # PASS/FAIL report of workers, scheduler, queue, audit
     python -m app.cli send-test-email ADDRESS   # send one email now and explain any SMTP failure
+    python -m app.cli rules-selftest            # run the YARA rules over official WordPress releases now
 """
 
 from __future__ import annotations
@@ -167,6 +168,25 @@ def _malware_health() -> tuple[bool, str, str]:
                                      f"({'age unknown' if age is None else f'{age:.0f}h old'}), YARA rules {st['yara_rules_version']}")
 
 
+def _selftest_health(db) -> tuple[bool, str, str]:
+    from app.monitoring.malware import yara_rules
+    from app.monitoring.selftest import quarantined_rules
+
+    _, version, _ = yara_rules()
+    bad = quarantined_rules(db, version)
+    if bad:
+        detail = "; ".join(f"{r} matched {m[0]['path']} in {m[0]['release']}" for r, m in sorted(bad.items()))
+        return False, "rule self-test", f"QUARANTINED (fix the rule): {detail}"[:400]
+    from sqlalchemy import func
+
+    from app.models import RuleSelftest
+
+    n = db.execute(select(func.count()).select_from(RuleSelftest).where(
+        RuleSelftest.rules_version == version, RuleSelftest.status == "ok")).scalar_one()
+    return True, "rule self-test", (f"no rule matches genuine code in {n} official release(s)" if n
+                                    else "no releases tested yet (runs daily once WordPress sites are scanned)")
+
+
 def _email_health(db) -> tuple[bool, str, str]:
     from datetime import timedelta
     from email.utils import parseaddr
@@ -239,6 +259,7 @@ def cmd_health() -> None:
         res = audit.verify_chain(db)
         checks.append((res.valid, "audit trail", f"{res.events_checked} events, chain {'intact' if res.valid else 'BROKEN at ' + str(res.first_invalid_seq)}"))
         checks.append(_malware_health())
+        checks.append(_selftest_health(db))
         checks.append(_email_health(db))
         checks.append(_backup_health(db))
         disk = h.get("disk", {})
@@ -271,6 +292,11 @@ def main(argv: list[str]) -> None:
         cmd_health()
     elif cmd == "send-test-email" and len(args) == 1:
         cmd_send_test_email(args[0])
+    elif cmd == "rules-selftest":
+        from app.monitoring.selftest import run_selftest
+
+        with platform_session() as db:
+            print(run_selftest(db))
     elif cmd == "demo-data":
         if not get_settings().is_synthetic_data_allowed:
             sys.exit("Synthetic demo data is only allowed in development, test or demo environments.")

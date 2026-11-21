@@ -113,6 +113,17 @@ def subscription_maintenance() -> dict:
     return stats
 
 
+@celery_app.task(name="cw.rules_selftest")
+def rules_selftest() -> dict:
+    from app.monitoring.selftest import run_selftest
+
+    with platform_session() as s:
+        stats = run_selftest(s)
+        s.commit()
+    _record_scheduler("rules_selftest", stats)
+    return stats
+
+
 def _record_scheduler(name: str, result: dict) -> None:
     with platform_session() as s:
         stmt = pg_insert(SchedulerState).values(name=name, last_run_at=utcnow(), last_result=result)

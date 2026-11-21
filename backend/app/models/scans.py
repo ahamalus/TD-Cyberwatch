@@ -393,3 +393,25 @@ class SoftwareInstall(UUIDPk, Base):
         UniqueConstraint("website_id", "product", "root", "slug", name="uq_software_install"),
         Index("ix_software_installs_tenant", "tenant_id"),
     )
+
+
+class RuleSelftest(UUIDPk, Base):
+    """Result of running the bundled YARA rules over an official software release (e.g. the WordPress 6.7.1
+    download). A rule that matches genuine vendor code is quarantined for that rule-set version."""
+
+    __tablename__ = "rule_selftests"
+
+    rules_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    product: Mapped[str] = mapped_column(String(32), nullable=False)
+    slug: Mapped[str] = mapped_column(String(200), nullable=False)
+    version: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)  # ok | misfire | error
+    files_checked: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    # [{"rule": ..., "path": ..., "excerpt": ...}]
+    matches: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
+    detail: Mapped[str | None] = mapped_column(String(500))
+    checked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("rules_version", "product", "slug", "version", name="uq_rule_selftest_release"),
+    )

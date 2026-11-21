@@ -60,6 +60,22 @@ def upgrade() -> None:
     )
 
     op.create_table(
+        "rule_selftests",
+        sa.Column("id", sa.UUID(), nullable=False),
+        sa.Column("rules_version", sa.String(length=64), nullable=False),
+        sa.Column("product", sa.String(length=32), nullable=False),
+        sa.Column("slug", sa.String(length=200), nullable=False),
+        sa.Column("version", sa.String(length=64), nullable=False),
+        sa.Column("status", sa.String(length=16), nullable=False),
+        sa.Column("files_checked", sa.Integer(), nullable=False),
+        sa.Column("matches", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
+        sa.Column("detail", sa.String(length=500), nullable=True),
+        sa.Column("checked_at", sa.DateTime(timezone=True), nullable=False),
+        sa.PrimaryKeyConstraint("id", name=op.f("pk_rule_selftests")),
+        sa.UniqueConstraint("rules_version", "product", "slug", "version", name="uq_rule_selftest_release"),
+    )
+
+    op.create_table(
         "software_installs",
         sa.Column("id", sa.UUID(), nullable=False),
         sa.Column("tenant_id", sa.UUID(), nullable=False),
@@ -93,6 +109,7 @@ def downgrade() -> None:
     op.drop_index("ix_software_installs_tenant", table_name="software_installs")
     op.drop_table("software_installs")
     op.drop_table("vendor_checksums")
+    op.drop_table("rule_selftests")
     op.drop_column("suppression_rules", "content_sha256")
     op.drop_column("file_inventory_items", "vendor_ref")
     op.drop_column("file_inventory_items", "vendor_status")

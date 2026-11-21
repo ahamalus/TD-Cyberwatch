@@ -31,6 +31,10 @@ celery_app.conf.update(
         "retention-cleanup": {
             "task": "cw.retention_cleanup", "schedule": crontab(hour=2, minute=17), "options": {"queue": "default"},
         },
+        # Runs on the monitoring worker (internet access, YARA loaded).
+        "rules-selftest": {
+            "task": "cw.rules_selftest", "schedule": crontab(hour=3, minute=41), "options": {"queue": "checks"},
+        },
         "subscription-maintenance": {
             "task": "cw.subscription_maintenance", "schedule": crontab(minute=7), "options": {"queue": "default"},
         },
