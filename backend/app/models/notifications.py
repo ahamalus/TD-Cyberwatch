@@ -84,6 +84,10 @@ class Notification(UUIDPk, Timestamps, Base):
     idempotency_key: Mapped[str] = mapped_column(String(200), unique=True, nullable=False)
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     fallback_for_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    # WhatsApp delivery receipts (webhook): sent | delivered | read | failed. NULL = no receipt yet.
+    delivery_status: Mapped[str | None] = mapped_column(String(16))
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     __table_args__ = (
         Index("ix_notifications_status_next", "status", "next_attempt_at"),

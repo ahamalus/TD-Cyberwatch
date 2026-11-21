@@ -102,6 +102,8 @@ class Payment(UUIDPk, Timestamps, Base):
     gateway_response: Mapped[str | None] = mapped_column(String(200))
     initiated_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
     verification: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+    # Sum of refunds confirmed by Paystack (minor units). status becomes "refunded" when it reaches amount_minor.
+    refunded_minor: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0", nullable=False)
 
 
 class WebhookEvent(UUIDPk, Base):
@@ -118,3 +120,48 @@ class WebhookEvent(UUIDPk, Base):
     payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
     error: Mapped[str | None] = mapped_column(Text)
     tenant_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+
+
+class PaymentRefund(UUIDPk, Timestamps, Base):
+    """A refund requested by Trust Data staff through Paystack. Status is only ever taken from Paystack."""
+
+    __tablename__ = "payment_refunds"
+
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    payment_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("payments.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    amount_minor: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    currency: Mapped[str] = mapped_column(String(3), nullable=False)
+    # pending | processing | processed | failed | needs-attention (Paystack's states)
+    status: Mapped[str] = mapped_column(String(20), default="pending", nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    provider_refund_id: Mapped[str | None] = mapped_column(String(64), unique=True)
+    requested_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    end_subscription: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    detail: Mapped[str | None] = mapped_column(String(300))
+
+
+class PaymentDispute(UUIDPk, Timestamps, Base):
+    """A chargeback or dispute raised by a customer's bank, reported by Paystack webhooks."""
+
+    __tablename__ = "payment_disputes"
+
+    tenant_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), index=True)
+    payment_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("payments.id", ondelete="SET NULL"), index=True
+    )
+    provider_dispute_id: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    transaction_reference: Mapped[str | None] = mapped_column(String(100))
+    # Paystack status, e.g. awaiting-merchant-feedback, awaiting-bank-feedback, pending, resolved
+    status: Mapped[str] = mapped_column(String(40), nullable=False)
+    resolution: Mapped[str | None] = mapped_column(String(40))  # merchant-accepted | declined
+    category: Mapped[str | None] = mapped_column(String(40))  # chargeback | fraud | ...
+    amount_minor: Mapped[int | None] = mapped_column(BigInteger)
+    currency: Mapped[str | None] = mapped_column(String(3))
+    due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    verified_with_provider: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)

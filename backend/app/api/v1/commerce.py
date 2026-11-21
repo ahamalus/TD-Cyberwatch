@@ -45,6 +45,31 @@ async def paystack_webhook(request: Request, db: Session = Depends(get_db)) -> J
     return JSONResponse({"status": status}, status_code=code)
 
 
+@public_router.get("/webhooks/whatsapp", include_in_schema=False)
+def whatsapp_webhook_verify(request: Request) -> Response:
+    """Meta's subscription check: echo hub.challenge only for the configured verify token."""
+    from app.services import whatsapp_webhook
+
+    q = request.query_params
+    challenge = whatsapp_webhook.verify_subscription(q.get("hub.mode"), q.get("hub.verify_token"), q.get("hub.challenge"))
+    if challenge is None:
+        return Response("forbidden", status_code=403, media_type="text/plain")
+    return Response(challenge, media_type="text/plain")
+
+
+@public_router.post("/webhooks/whatsapp", include_in_schema=False)
+async def whatsapp_webhook_events(request: Request) -> JSONResponse:
+    from app.db.session import platform_session
+    from app.services import whatsapp_webhook
+
+    raw = await request.body()
+    if len(raw) > 1024 * 1024:
+        return JSONResponse({"status": "too large"}, status_code=413)
+    with platform_session() as db:
+        code, stats = whatsapp_webhook.process(db, raw, request.headers.get("x-hub-signature-256"))
+    return JSONResponse({"status": "ok" if code == 200 else "rejected", **stats}, status_code=code)
+
+
 @router.get("/billing")
 def billing_overview(ctx: TenantContext = Depends(require(P.BILLING_READ)), db: Session = Depends(get_db)) -> dict:
     sub = entitlements.current_subscription(db, ctx.tenant_id)

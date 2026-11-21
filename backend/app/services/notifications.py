@@ -472,5 +472,8 @@ def channel_status() -> dict[str, dict[str, Any]]:
             "configured": bool(s.whatsapp_phone_number_id and s.whatsapp_access_token),
             "provider": "whatsapp_cloud_api",
             "api_version": s.whatsapp_api_version,
+            # Delivery receipts and STOP opt-outs need the webhook (app secret + verify token).
+            "webhook_configured": bool(s.whatsapp_app_secret and s.whatsapp_verify_token),
+            "webhook_url": f"{s.public_base_url.rstrip('/')}/api/v1/webhooks/whatsapp",
         },
     }

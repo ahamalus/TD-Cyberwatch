@@ -267,7 +267,7 @@ function HistoryTable() {
   const [status, setStatus] = useState<string | null>(null);
   const q = useQuery({
     queryKey: ["notif-history", tid, page, status],
-    queryFn: () => api.get<Page<{ id: string; channel: string; category: string; recipient: string; subject: string; status: string; attempts: number; max_attempts: number; last_error: string | null; sent_at: string | null; created_at: string; next_attempt_at: string; is_fallback: boolean }>>(`/tenants/${tid}/notifications`, { page, page_size: 25, status: status ?? undefined }),
+    queryFn: () => api.get<Page<{ id: string; channel: string; category: string; recipient: string; subject: string; status: string; attempts: number; max_attempts: number; last_error: string | null; sent_at: string | null; created_at: string; next_attempt_at: string; is_fallback: boolean; delivery_status: string | null; read_at: string | null }>>(`/tenants/${tid}/notifications`, { page, page_size: 25, status: status ?? undefined }),
   });
   return (
     <Card>
@@ -288,7 +288,7 @@ function HistoryTable() {
           { key: "channel", header: "Channel", render: (n) => <Group gap={4}>{n.channel === "email" ? <IconMail size={14} /> : <IconBrandWhatsapp size={14} />}<Text size="sm">{humanize(n.channel)}</Text>{n.is_fallback && <Badge size="xs">fallback</Badge>}</Group> },
           { key: "recipient", header: "Recipient", render: (n) => <Text size="sm">{n.recipient}</Text> },
           { key: "subject", header: "Subject", render: (n) => <Text size="sm" lineClamp={1}>{n.subject}</Text>, visibleFrom: "lg" },
-          { key: "status", header: "Status", render: (n) => <Tooltip label={n.last_error ?? (n.sent_at ? `Sent ${fmtDateTime(n.sent_at)}` : `Next attempt ${fmtRelative(n.next_attempt_at)}`)}><Badge color={n.status === "sent" ? "secure" : n.status === "pending" ? "info" : n.status === "failed" ? "threat" : "amber"}>{humanize(n.status)}</Badge></Tooltip> },
+          { key: "status", header: "Status", render: (n) => <Tooltip label={n.last_error ?? (n.sent_at ? `Sent ${fmtDateTime(n.sent_at)}` : `Next attempt ${fmtRelative(n.next_attempt_at)}`)}><Badge color={n.status === "sent" ? "secure" : n.status === "pending" ? "info" : n.status === "failed" ? "threat" : "amber"}>{n.status === "sent" && n.channel === "whatsapp" && (n.delivery_status === "delivered" || n.delivery_status === "read") ? humanize(n.delivery_status) : humanize(n.status)}</Badge></Tooltip> },
           { key: "attempts", header: "Attempts", render: (n) => <Text size="sm">{n.attempts}/{n.max_attempts}</Text>, visibleFrom: "md" },
         ]}
       />

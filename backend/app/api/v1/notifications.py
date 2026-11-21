@@ -180,6 +180,7 @@ def history(
         "id": str(n.id), "channel": n.channel, "category": n.category, "recipient": n.recipient,
         "subject": n.subject, "status": n.status, "attempts": n.attempts, "max_attempts": n.max_attempts,
         "next_attempt_at": n.next_attempt_at, "last_error": n.last_error, "sent_at": n.sent_at,
+        "delivery_status": n.delivery_status, "delivered_at": n.delivered_at, "read_at": n.read_at,
         "incident_id": str(n.incident_id) if n.incident_id else None, "created_at": n.created_at,
         "is_fallback": n.fallback_for_id is not None or n.idempotency_key.startswith("fallback:"),
     })

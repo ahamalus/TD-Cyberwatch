@@ -109,6 +109,16 @@ class PaystackClient:
         })
         return _to_verified(d)
 
+    def refund(self, *, reference: str, amount: int, merchant_note: str) -> dict[str, Any]:
+        return self._request("POST", "/refund", {"transaction": reference, "amount": amount,
+                                                 "merchant_note": merchant_note})
+
+    def get_refund(self, refund_id: str) -> dict[str, Any]:
+        return self._request("GET", f"/refund/{refund_id}")
+
+    def get_dispute(self, dispute_id: str) -> dict[str, Any]:
+        return self._request("GET", f"/dispute/{dispute_id}")
+
 
 def _to_verified(d: dict[str, Any]) -> VerifiedTransaction:
     return VerifiedTransaction(
@@ -309,6 +319,20 @@ def process_webhook(db: Session, raw_body: bytes, signature: str | None) -> tupl
             db.flush()
     except IntegrityError:
         return 200, "duplicate"
+    if event.startswith("refund.") or event.startswith("charge.dispute."):
+        from app.services import refunds
+
+        try:
+            outcome = (refunds.handle_refund_event(db, data) if event.startswith("refund.")
+                       else refunds.handle_dispute_event(db, event, data))
+            row.status = "ignored" if outcome.startswith(("unknown", "no ")) else "processed"
+            row.error = None if row.status == "processed" else outcome
+        except Exception as exc:  # noqa: BLE001 - recorded for staff; Paystack retries non-2xx only
+            log.exception("paystack_webhook_failed", event=event)
+            row.status, row.error = "failed", f"{type(exc).__name__}: {exc}"[:500]
+        row.processed_at = utcnow()
+        db.commit()
+        return 200, row.status
     if event != "charge.success" or not reference:
         row.status = "ignored"
         row.processed_at = utcnow()
@@ -419,7 +443,11 @@ def run_subscription_maintenance(db: Session) -> dict[str, int]:
     s = get_settings()
     now = utcnow()
     stats = {"trials_expired": 0, "renewed": 0, "renewal_failed": 0, "grace_started": 0, "expired": 0,
-             "cancelled": 0, "reminders": 0}
+             "cancelled": 0, "reminders": 0, "refunds_updated": 0}
+    if payments_configured():
+        from app.services.refunds import refresh_open_refunds
+
+        stats["refunds_updated"] = refresh_open_refunds(db)
     subs = db.execute(select(Subscription).where(Subscription.is_current.is_(True))).scalars().all()
     for sub in subs:
         plan = db.get(Plan, sub.plan_id)

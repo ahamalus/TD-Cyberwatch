@@ -1,6 +1,6 @@
 """SQLAlchemy models. Importing this package registers every table on Base.metadata."""
 
-from app.models.billing import Payment, Plan, Subscription, WebhookEvent
+from app.models.billing import Payment, PaymentDispute, PaymentRefund, Plan, Subscription, WebhookEvent
 from app.models.hosting import (
     CapabilityDiscovery,
     ConnectorCapability,
@@ -103,6 +103,8 @@ __all__ = [
     "MonitoringConfig",
     "Notification",
     "Payment",
+    "PaymentDispute",
+    "PaymentRefund",
     "Permission",
     "Plan",
     "PlatformRoleAssignment",

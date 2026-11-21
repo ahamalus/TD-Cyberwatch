@@ -25,8 +25,28 @@ open Paystack's docs): endpoint paths above, `charge.success` payload fields use
 and the `authorization.reusable` flag. Paystack's own subscription product is not used, so Paystack does
 not retry failed renewals for us — CyberWatch handles retries and reminders.
 
-Refunds and disputes: payments can be marked `reversed/refunded` through the database by a billing
-administrator today; an in-app refund workflow is not yet implemented (BUILD_STATUS.md).
+**Refunds** (Admin → Payments → *Refund…*, staff with *payments manage*: billing administrators):
+- **What you can refund:** full or partial amounts, any number of times, up to the amount paid. In-flight
+  refunds count against what is left.
+- **Reason:** required. It is kept in the audit trail and sent to Paystack as the merchant note.
+- **How the request is made:** `POST /refund` with the transaction reference.
+- **Status:** always taken from Paystack's API (`GET /refund/:id`), never from a webhook body alone. The
+  `refund.*` webhooks trigger that check, and the hourly billing maintenance re-checks open refunds in case a
+  webhook was early or lost.
+- **Effect:** the payment is credited only when Paystack reports the refund *processed*, and becomes
+  *refunded* when fully refunded.
+- **Ending the subscription:** optional. It happens when the refund completes.
+- **If Paystack refuses:** the refund is recorded as failed with Paystack's reason.
+
+**Disputes / chargebacks:**
+- **How they arrive:** the `charge.dispute.create`, `charge.dispute.remind` and `charge.dispute.resolve`
+  webhooks.
+- **Recording:** each dispute is recorded and confirmed with `GET /dispute/:id` where possible. One that
+  cannot be confirmed is still recorded, marked as unconfirmed, because disputes have deadlines.
+- **Alerts:** payment staff (billing administrators and platform administrators) are emailed when a dispute
+  opens and on each reminder.
+- **Where to see them:** Admin → Payments lists open disputes by due date. Answer them on the Paystack
+  dashboard; CyberWatch does not submit evidence.
 
 Reconciliation: Admin → Payments shows verification state; "Re-verify" re-queries Paystack.
 
@@ -43,7 +63,20 @@ Reconciliation: Admin → Payments shows verification state; "Re-verify" re-quer
    (`type: template`). Recipients must have opted in (consent is recorded per recipient/user).
    Business-initiated messages outside the 24-hour window must use approved templates — CyberWatch
    only sends templates.
-5. Delivery receipts via the Meta webhook are not yet processed (status = accepted by API).
+5. **Webhook (delivery receipts and opt-outs).** In the Meta app (WhatsApp → Configuration):
+   - **Callback URL:** `https://<your-host>/api/v1/webhooks/whatsapp` (shown in Admin → Messaging).
+   - **Verify token:** a long random string you choose; set the same value as `CW_WHATSAPP_VERIFY_TOKEN`.
+   - **App secret:** set it as `CW_WHATSAPP_APP_SECRET`. Every POST must carry a valid
+     `X-Hub-Signature-256`; unsigned or wrongly signed requests get 401.
+   - **Subscribe** to the `messages` field.
+
+   What the webhook handles:
+   - **Delivery receipts:** CyberWatch records *delivered* and *read*. A message that fails *after* Meta
+     accepted it (for example, the number is not on WhatsApp) is marked failed, and the alert falls back to
+     email when the policy allows.
+   - **Opt-outs:** a reply of **STOP** (or UNSUBSCRIBE / OPT OUT) turns off WhatsApp alerts to that number in
+     every organisation, and is audited. People opt in again in CyberWatch.
+   - **What is stored:** message text and phone numbers from the webhook are not stored.
 
 Failures: HTTP 429/5xx retry with backoff (max 5 attempts); 4xx are permanent; optional email fallback.
 

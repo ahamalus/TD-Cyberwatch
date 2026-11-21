@@ -30,6 +30,8 @@ from app.models import (
     ManagedServiceGrant,
     Notification,
     Payment,
+    PaymentDispute,
+    PaymentRefund,
     Plan,
     PlatformRoleAssignment,
     PlatformSetting,
@@ -373,12 +375,17 @@ def admin_payments(pc: PlatformContext = Depends(require_platform(P.PLATFORM_PAY
     if status:
         q = q.where(Payment.status == status)
     names = dict(db.execute(select(Tenant.id, Tenant.name)).all())
+    disputed = set(db.execute(select(PaymentDispute.payment_id).where(PaymentDispute.resolved_at.is_(None),
+                                                                      PaymentDispute.payment_id.is_not(None))).scalars())
     return paginate(db, q.order_by(Payment.created_at.desc()), params, lambda p: {
         "id": str(p.id), "tenant": names.get(p.tenant_id), "tenant_id": str(p.tenant_id), "reference": p.reference,
         "amount_minor": p.amount_minor, "currency": p.currency, "status": p.status, "purpose": p.purpose,
         "verified_at": p.verified_at, "paid_at": p.paid_at, "channel": p.channel,
         "gateway_response": p.gateway_response, "created_at": p.created_at,
-        "reconciled": p.status == "success" and p.verified_at is not None and p.verification.get("amount") == p.amount_minor,
+        "reconciled": p.status in ("success", "refunded") and p.verified_at is not None
+        and p.verification.get("amount") == p.amount_minor,
+        "refunded_minor": p.refunded_minor,
+        "open_dispute": p.id in disputed,
     })
 
 
@@ -403,6 +410,74 @@ def reverify_payment(payment_id: uuid.UUID,
     p = billing.verify_reference(pc.db, p.tenant_id, p.reference, pc.actor())
     pc.db.commit()
     return {"status": p.status, "verified_at": p.verified_at}
+
+
+class RefundIn(BaseModel):
+    amount_minor: int | None = Field(default=None, ge=1, description="Omit for the full remaining amount.")
+    reason: str = Field(min_length=10, max_length=1000)
+    end_subscription: bool = False
+
+
+def _refund_dict(r: PaymentRefund) -> dict:
+    return {"id": str(r.id), "payment_id": str(r.payment_id), "amount_minor": r.amount_minor, "currency": r.currency,
+            "status": r.status, "reason": r.reason, "end_subscription": r.end_subscription,
+            "provider_refund_id": r.provider_refund_id, "detail": r.detail, "created_at": r.created_at,
+            "processed_at": r.processed_at}
+
+
+@admin.get("/payments/{payment_id}/refunds")
+def payment_refunds(payment_id: uuid.UUID,
+                    pc: PlatformContext = Depends(require_platform(P.PLATFORM_PAYMENTS_READ))) -> dict:
+    from app.services import refunds
+
+    p = pc.db.get(Payment, payment_id)
+    if p is None:
+        raise NotFound("Payment not found.")
+    rows = pc.db.execute(select(PaymentRefund).where(PaymentRefund.payment_id == p.id)
+                         .order_by(PaymentRefund.created_at.desc())).scalars().all()
+    return {"refundable_minor": refunds.refundable_minor(pc.db, p), "items": [_refund_dict(r) for r in rows]}
+
+
+@admin.post("/payments/{payment_id}/refund")
+def refund_payment(payment_id: uuid.UUID, body: RefundIn,
+                   pc: PlatformContext = Depends(require_platform(P.PLATFORM_PAYMENTS_MANAGE))) -> dict:
+    from app.services import refunds
+
+    r = refunds.request_refund(pc.db, payment_id, body.amount_minor, body.reason, body.end_subscription, pc.actor())
+    pc.db.commit()
+    return _refund_dict(r)
+
+
+@admin.post("/refunds/{refund_id}/refresh")
+def refresh_refund(refund_id: uuid.UUID,
+                   pc: PlatformContext = Depends(require_platform(P.PLATFORM_PAYMENTS_MANAGE))) -> dict:
+    from app.services import refunds
+    from app.services.billing import PaystackError
+
+    r = pc.db.get(PaymentRefund, refund_id)
+    if r is None:
+        raise NotFound("Refund not found.")
+    try:
+        refunds.refresh_refund(pc.db, r)
+    except PaystackError as exc:
+        raise ValidationFailed(f"Paystack did not confirm the refund status: {exc}") from exc
+    pc.db.commit()
+    return _refund_dict(r)
+
+
+@admin.get("/disputes")
+def disputes(pc: PlatformContext = Depends(require_platform(P.PLATFORM_PAYMENTS_READ)), params: PageParams = Depends(),
+             open_only: bool = True) -> dict:
+    names = dict(pc.db.execute(select(Tenant.id, Tenant.name)).all())
+    q = select(PaymentDispute)
+    if open_only:
+        q = q.where(PaymentDispute.resolved_at.is_(None))
+    return paginate(pc.db, q.order_by(PaymentDispute.due_at.asc().nulls_last(), PaymentDispute.created_at.desc()),
+                    params, lambda d: {
+        "id": str(d.id), "tenant": names.get(d.tenant_id), "payment_id": str(d.payment_id) if d.payment_id else None,
+        "reference": d.transaction_reference, "status": d.status, "resolution": d.resolution, "category": d.category,
+        "amount_minor": d.amount_minor, "currency": d.currency, "due_at": d.due_at, "resolved_at": d.resolved_at,
+        "verified_with_provider": d.verified_with_provider, "created_at": d.created_at})
 
 
 # ---------------------------------------------------------------- audit
@@ -509,7 +584,7 @@ def messaging(pc: PlatformContext = Depends(require_platform(P.PLATFORM_MESSAGIN
                     params, lambda n: {"id": str(n.id), "tenant": names.get(n.tenant_id), "channel": n.channel,
                                        "category": n.category, "status": n.status, "attempts": n.attempts,
                                        "last_error": n.last_error, "created_at": n.created_at,
-                                       "next_attempt_at": n.next_attempt_at})
+                                       "next_attempt_at": n.next_attempt_at, "delivery_status": n.delivery_status})
     page["channels"] = channel_status()
     page["whatsapp_templates"] = {k: {"name": v[0], "language": v[1], "params": v[2]} for k, v in WHATSAPP_TEMPLATES.items()}
     return page

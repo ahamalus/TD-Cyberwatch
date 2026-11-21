@@ -359,12 +359,30 @@ export function PaymentsAdminPage() {
   const payments = useQuery({ queryKey: ["admin-payments", status, page], queryFn: () => api.get<Page<any>>("/admin/payments", { status: status ?? undefined, page, page_size: 25 }), retry: false }); // eslint-disable-line @typescript-eslint/no-explicit-any
   const hooks = useQuery({ queryKey: ["admin-webhooks"], queryFn: () => api.get<Page<any>>("/admin/webhooks", { page_size: 15 }), retry: false }); // eslint-disable-line @typescript-eslint/no-explicit-any
   const reverify = useMutation({ mutationFn: (id: string) => api.post(`/admin/payments/${id}/reverify`), onSuccess: () => payments.refetch(), onError });
+  const disputes = useQuery({ queryKey: ["admin-disputes"], queryFn: () => api.get<Page<any>>("/admin/disputes", { page_size: 50 }), retry: false }); // eslint-disable-line @typescript-eslint/no-explicit-any
+  const [refunding, setRefunding] = useState<any | null>(null); // eslint-disable-line @typescript-eslint/no-explicit-any
   if (payments.error) return <ErrorState error={payments.error} />;
   return (
     <>
       <PageHeader title="Payments and revenue" description="Transactions, verification state and webhook processing. Card data is never stored." />
       <Stack>
-        <Section title="Transactions" actions={<Select placeholder="Status" clearable w={160} data={["initialized", "success", "failed", "abandoned"].map((v) => ({ value: v, label: humanize(v) }))} value={status} onChange={setStatus} aria-label="Status" />}>
+        {(disputes.data?.items.length ?? 0) > 0 && (
+          <Section title="Open disputes" description="Raised by customers' banks. Respond on the Paystack dashboard (Disputes) before the due date; CyberWatch tracks them and emails payment staff.">
+            <DataTable
+              rows={disputes.data?.items}
+              rowKey={(d) => d.id}
+              columns={[
+                { key: "due", header: "Respond by", render: (d) => <Text size="sm" c={d.due_at && new Date(d.due_at).getTime() - Date.now() < 2 * 864e5 ? "threat" : undefined}>{d.due_at ? fmtDateTime(d.due_at) : "Unknown"}</Text> },
+                { key: "c", header: "Customer", render: (d) => <Text size="sm">{d.tenant ?? "Unmatched payment"}</Text> },
+                { key: "a", header: "Amount", render: (d) => <Text size="sm">{d.amount_minor ? fmtMoney(d.amount_minor, d.currency ?? "NGN") : "—"}</Text> },
+                { key: "s", header: "Status", render: (d) => <Badge color="amber" variant="light" styles={{ root: { textTransform: "none" } }}>{humanize(d.status)}{d.category ? ` · ${humanize(d.category)}` : ""}</Badge> },
+                { key: "v", header: "Confirmed", render: (d) => <Text size="xs" c="dimmed">{d.verified_with_provider ? "With Paystack" : "Webhook only (not yet confirmed)"}</Text>, visibleFrom: "md" },
+                { key: "r", header: "Reference", render: (d) => <Text size="xs" className="cw-mono">{d.reference}</Text>, visibleFrom: "lg" },
+              ]}
+            />
+          </Section>
+        )}
+        <Section title="Transactions" actions={<Select placeholder="Status" clearable w={160} data={["initialized", "success", "refunded", "failed", "abandoned"].map((v) => ({ value: v, label: humanize(v) }))} value={status} onChange={setStatus} aria-label="Status" />}>
           <DataTable
             rows={payments.data?.items}
             loading={payments.isLoading}
@@ -378,13 +396,28 @@ export function PaymentsAdminPage() {
               { key: "t", header: "Created", render: (p) => <Text size="sm">{fmtDateTime(p.created_at)}</Text> },
               { key: "c", header: "Customer", render: (p) => <Text size="sm">{p.tenant}</Text> },
               { key: "a", header: "Amount", render: (p) => <Text size="sm">{fmtMoney(p.amount_minor, p.currency)}</Text> },
-              { key: "s", header: "Status", render: (p) => <Badge color={p.status === "success" ? "secure" : p.status === "initialized" ? "gray" : "threat"}>{humanize(p.status)}</Badge> },
+              {
+                key: "s", header: "Status", render: (p) => (
+                  <Group gap={4}>
+                    <Badge color={p.status === "success" ? "secure" : p.status === "initialized" || p.status === "refunded" ? "gray" : "threat"}>{humanize(p.status)}</Badge>
+                    {p.refunded_minor > 0 && p.status !== "refunded" && <Badge variant="outline" color="gray" styles={{ root: { textTransform: "none" } }}>{fmtMoney(p.refunded_minor, p.currency)} refunded</Badge>}
+                    {p.open_dispute && <Badge color="amber" styles={{ root: { textTransform: "none" } }}>Disputed</Badge>}
+                  </Group>
+                ),
+              },
               { key: "r", header: "Reconciled", render: (p) => <Badge variant="outline" color={p.reconciled ? "secure" : "gray"}>{p.reconciled ? "Verified" : "No"}</Badge>, visibleFrom: "md" },
               { key: "ref", header: "Reference", render: (p) => <Text size="xs" className="cw-mono">{p.reference}</Text>, visibleFrom: "lg" },
-              { key: "x", header: "", render: (p) => can("platform:payments:manage") && p.status !== "success" && <Button size="xs" variant="subtle" onClick={() => reverify.mutate(p.id)}>Re-verify</Button> },
+              {
+                key: "x", header: "", render: (p) => can("platform:payments:manage") && (
+                  p.status === "success"
+                    ? <Button size="xs" variant="subtle" color="threat" onClick={() => setRefunding(p)}>Refund…</Button>
+                    : p.status !== "refunded" && <Button size="xs" variant="subtle" onClick={() => reverify.mutate(p.id)}>Re-verify</Button>
+                ),
+              },
             ]}
           />
         </Section>
+        {refunding && <RefundModal payment={refunding} onClose={() => { setRefunding(null); payments.refetch(); }} />}
         <Section title="Webhook events" description="Signature-verified, deduplicated and re-verified with the provider before any change.">
           <DataTable
             rows={hooks.data?.items}
@@ -404,6 +437,49 @@ export function PaymentsAdminPage() {
   );
 }
 
+function RefundModal({ payment, onClose }: { payment: any; onClose: () => void }) { // eslint-disable-line @typescript-eslint/no-explicit-any
+  const info = useQuery({ queryKey: ["admin-refunds", payment.id], queryFn: () => api.get<{ refundable_minor: number; items: any[] }>(`/admin/payments/${payment.id}/refunds`) }); // eslint-disable-line @typescript-eslint/no-explicit-any
+  const [amount, setAmount] = useState<number | "">("");
+  const [reason, setReason] = useState("");
+  const [endSub, setEndSub] = useState(false);
+  const refund = useMutation({
+    mutationFn: () => api.post<{ status: string; detail: string | null }>(`/admin/payments/${payment.id}/refund`, {
+      amount_minor: amount === "" ? null : Math.round(Number(amount) * 100), reason: reason.trim(), end_subscription: endSub,
+    }),
+    onSuccess: (r) => {
+      notifications.show({ color: r.status === "failed" ? "threat" : "secure", title: r.status === "failed" ? "Refund refused" : "Refund requested",
+        message: r.status === "failed" ? r.detail ?? "Paystack refused the refund." : "Paystack processes refunds asynchronously; the status updates automatically." });
+      onClose();
+    },
+    onError,
+  });
+  const max = (info.data?.refundable_minor ?? 0) / 100;
+  return (
+    <Modal opened onClose={onClose} title={`Refund ${payment.reference}`} size="lg">
+      <Stack>
+        <Text size="sm">Paid {fmtMoney(payment.amount_minor, payment.currency)} by {payment.tenant}. Still refundable: <b>{fmtMoney(info.data?.refundable_minor ?? 0, payment.currency)}</b>.</Text>
+        <NumberInput label={`Amount (${payment.currency})`} description="Leave empty to refund everything still refundable." min={0.01} max={max} decimalScale={2} value={amount} onChange={(v) => setAmount(v === "" ? "" : Number(v))} />
+        <Textarea label="Reason" required autosize minRows={2} value={reason} onChange={(e) => setReason(e.currentTarget.value)} description={minCharsHint(reason, 10, "Kept in the audit trail and sent to Paystack as the merchant note.")} />
+        <Switch label="End the customer's subscription when the refund completes" checked={endSub} onChange={(e) => setEndSub(e.currentTarget.checked)} />
+        {(info.data?.items.length ?? 0) > 0 && (
+          <Table fz="sm">
+            <Table.Thead><Table.Tr><Table.Th>Requested</Table.Th><Table.Th>Amount</Table.Th><Table.Th>Status</Table.Th></Table.Tr></Table.Thead>
+            <Table.Tbody>
+              {info.data!.items.map((r) => (
+                <Table.Tr key={r.id}><Table.Td>{fmtDateTime(r.created_at)}</Table.Td><Table.Td>{fmtMoney(r.amount_minor, r.currency)}</Table.Td><Table.Td>{humanize(r.status)}</Table.Td></Table.Tr>
+              ))}
+            </Table.Tbody>
+          </Table>
+        )}
+        <Group justify="flex-end">
+          <Button variant="default" onClick={onClose}>Cancel</Button>
+          <Button color="threat" onClick={() => refund.mutate()} loading={refund.isPending} disabled={reason.trim().length < 10 || max <= 0}>Request refund</Button>
+        </Group>
+      </Stack>
+    </Modal>
+  );
+}
+
 // ---------------------------------------------------------------- messaging
 
 export function MessagingAdminPage() {
@@ -419,7 +495,7 @@ export function MessagingAdminPage() {
       <SimpleGrid cols={{ base: 1, md: 2 }} mb="md">
         <Section title="Email (SMTP)">{d && <KeyValue items={[["Status", <HealthBadge key="e" state={d.channels.email.configured ? "healthy" : "unavailable"} />], ["Host", d.channels.email.host ?? "Not configured"]]} />}</Section>
         <Section title="WhatsApp Cloud API">
-          {d && <KeyValue items={[["Status", <HealthBadge key="w" state={d.channels.whatsapp.configured ? "healthy" : "unavailable"} />], ["Graph API version", d.channels.whatsapp.api_version], ...Object.entries(d.whatsapp_templates as Record<string, { name: string; language: string }>).map(([k, t]) => [`Template: ${humanize(k)}`, `${t.name} (${t.language})`] as [string, string])]} />}
+          {d && <KeyValue items={[["Status", <HealthBadge key="w" state={d.channels.whatsapp.configured ? "healthy" : "unavailable"} />], ["Graph API version", d.channels.whatsapp.api_version], ["Delivery receipts", d.channels.whatsapp.webhook_configured ? "Webhook configured" : "Webhook not configured (set CW_WHATSAPP_APP_SECRET and CW_WHATSAPP_VERIFY_TOKEN)"], ["Webhook URL", <Code key="u">{d.channels.whatsapp.webhook_url}</Code>], ...Object.entries(d.whatsapp_templates as Record<string, { name: string; language: string }>).map(([k, t]) => [`Template: ${humanize(k)}`, `${t.name} (${t.language})`] as [string, string])]} />}
           <Text size="xs" c="dimmed" mt="xs">Templates must be approved in WhatsApp Manager before delivery succeeds.</Text>
         </Section>
       </SimpleGrid>
@@ -438,6 +514,7 @@ export function MessagingAdminPage() {
             { key: "c", header: "Customer", render: (n: any) => <Text size="sm">{n.tenant ?? "Platform"}</Text> }, // eslint-disable-line @typescript-eslint/no-explicit-any
             { key: "ch", header: "Channel", render: (n: any) => <Text size="sm">{humanize(n.channel)}</Text> }, // eslint-disable-line @typescript-eslint/no-explicit-any
             { key: "a", header: "Attempts", render: (n: any) => <Text size="sm">{n.attempts}</Text> }, // eslint-disable-line @typescript-eslint/no-explicit-any
+            { key: "d", header: "Delivery", render: (n: any) => <Text size="sm">{n.channel === "whatsapp" ? humanize(n.delivery_status ?? "no receipt") : "—"}</Text> }, // eslint-disable-line @typescript-eslint/no-explicit-any
             { key: "e", header: "Last error", render: (n: any) => <Text size="xs" c="dimmed">{n.last_error}</Text> }, // eslint-disable-line @typescript-eslint/no-explicit-any
             { key: "x", header: "", render: (n: any) => (n.status === "failed" || n.status === "unconfigured") && <Button size="xs" variant="subtle" onClick={() => retry.mutate(n.id)}>Retry</Button> }, // eslint-disable-line @typescript-eslint/no-explicit-any
           ]}
