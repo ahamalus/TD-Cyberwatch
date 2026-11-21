@@ -70,6 +70,7 @@ test("every administration and operations page renders in its own portal", async
   for (const portal of ["admin", "ops"]) {
     await page.goto(`/${portal}/overview`);
     const nav = page.getByRole("navigation", { name: `${portal} navigation` });
+    await expect(nav.getByRole("link").first()).toBeVisible(); // the menu renders after the session loads
     const links = await nav.getByRole("link").evaluateAll((els) => els.map((e) => e.getAttribute("href") ?? ""));
     expect(links.length).toBeGreaterThan(3);
     for (const href of links) {
