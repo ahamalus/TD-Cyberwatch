@@ -458,7 +458,7 @@ def _content_mode(db: Session, website_id: uuid.UUID, has_previous: bool) -> tup
         )
     ).scalars().all()
     if any(j.get("content_mode", "full") in full_modes and "time" not in (j.get("limits_hit") or [])
-           for j in finished_full if "files_seen" in j):
+           for j in finished_full):
         return "incremental", True
     return "full", False
 
