@@ -9,6 +9,7 @@ import {
   Grid,
   Group,
   NumberInput,
+  SegmentedControl,
   Select,
   SimpleGrid,
   Stack,
@@ -844,8 +845,9 @@ function WebsiteDetailsForm({ site, onSaved }: { site: Website; onSaved: () => v
   const [notes, setNotes] = useState(site.notes ?? "");
   const verification = useQuery({
     queryKey: ["verification", tid, site.id],
-    queryFn: () => api.get<{ status: string; path: string; token: string | null; message: string }>(`/tenants/${tid}/websites/${site.id}/verification`),
+    queryFn: () => api.get<{ status: string; path: string; token: string | null; message: string; dns_name: string; dns_value: string | null }>(`/tenants/${tid}/websites/${site.id}/verification`),
   });
+  const [method, setMethod] = useState<string>("http_file");
   const save = useMutation({
     mutationFn: () => api.patch(`/tenants/${tid}/websites/${site.id}`, { name, technology: technology || null, notes: notes || null }),
     onSuccess: () => {
@@ -855,7 +857,7 @@ function WebsiteDetailsForm({ site, onSaved }: { site: Website; onSaved: () => v
     onError: (e) => notifications.show({ color: "threat", title: "Not saved", message: errorMessage(e) }),
   });
   const verify = useMutation({
-    mutationFn: () => api.post<{ status: string; message: string }>(`/tenants/${tid}/websites/${site.id}/verify`),
+    mutationFn: () => api.post<{ status: string; message: string }>(`/tenants/${tid}/websites/${site.id}/verify`, { method }),
     onSuccess: (r) => {
       notifications.show({ color: r.status === "verified" ? "secure" : "amber", title: "Verification", message: r.message });
       verification.refetch();
@@ -877,14 +879,31 @@ function WebsiteDetailsForm({ site, onSaved }: { site: Website; onSaved: () => v
           )}
         </Stack>
       </Section>
-      <Section title="Ownership verification" description="Optional. Proves control of the website by publishing a token file.">
+      <Section title="Ownership verification" description="Optional. Proves control of the website, either with a file on the site or a DNS record.">
         {verification.data && (
           <Stack>
             <HealthBadge state={verification.data.status === "verified" ? "valid" : "pending"} />
-            <Text size="sm">Publish a text file at:</Text>
-            <Code block>{`${site.url.replace(/\/$/, "")}${verification.data.path}`}</Code>
-            <Text size="sm">containing exactly:</Text>
-            <Code block>{verification.data.token}</Code>
+            <SegmentedControl value={method} onChange={setMethod} w="fit-content" aria-label="Verification method"
+              data={[{ value: "http_file", label: "Upload a file" }, { value: "dns_txt", label: "DNS TXT record" }]} />
+            {method === "http_file" ? (
+              <>
+                <Text size="sm">Publish a text file at:</Text>
+                <Code block>{`${site.url.replace(/\/$/, "")}${verification.data.path}`}</Code>
+                <Text size="sm">containing exactly:</Text>
+                <Code block>{verification.data.token}</Code>
+              </>
+            ) : (
+              <>
+                <Text size="sm">At your DNS provider, add a TXT record named:</Text>
+                <Code block>{verification.data.dns_name}</Code>
+                <Text size="sm">with the value:</Text>
+                <Code block>{verification.data.dns_value}</Code>
+                <Text size="xs" c="dimmed">
+                  {site.hostname.startsWith("www.") ? `The record may also be placed on _cyberwatch.${site.hostname.slice(4)}. ` : ""}
+                  New records can take a few minutes (sometimes hours) to be visible.
+                </Text>
+              </>
+            )}
             {can("websites:manage") && (
               <Button variant="light" w="fit-content" onClick={() => verify.mutate()} loading={verify.isPending}>
                 Verify now

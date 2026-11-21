@@ -424,21 +424,49 @@ class VerificationOut(BaseModel):
     path: str
     token: str | None
     message: str
+    # DNS alternative: a TXT record with this name and value.
+    dns_name: str
+    dns_value: str | None
+
+
+class VerifyIn(BaseModel):
+    method: str = Field(default="http_file", pattern="^(http_file|dns_txt)$")
+
+
+def _verification_out(w, method: str, message: str) -> VerificationOut:
+    from app.services import dns_verify
+
+    return VerificationOut(status=w.verification_status, method=method, path=VERIFY_PATH, token=w.verification_token,
+                           message=message, dns_name=dns_verify.record_names(w.hostname)[0],
+                           dns_value=f"{dns_verify.VALUE_PREFIX}{w.verification_token}" if w.verification_token else None)
 
 
 @router.get("/{website_id}/verification", response_model=VerificationOut)
 def verification_instructions(website_id: uuid.UUID, ctx: TenantContext = Depends(require(P.WEBSITES_READ)),
                               db: Session = Depends(get_db)) -> VerificationOut:
     w = get_website(db, ctx, website_id)
-    return VerificationOut(status=w.verification_status, method="http_file", path=VERIFY_PATH,
-                           token=w.verification_token,
-                           message=f"Publish a file at {w.url.rstrip('/')}{VERIFY_PATH} whose content is the token.")
+    return _verification_out(w, "http_file",
+                             f"Publish a file at {w.url.rstrip('/')}{VERIFY_PATH} whose content is the token, "
+                             "or add the DNS TXT record.")
 
 
 @router.post("/{website_id}/verify", response_model=VerificationOut)
-def verify_ownership(website_id: uuid.UUID, ctx: TenantContext = Depends(require(P.WEBSITES_MANAGE)),
+def verify_ownership(website_id: uuid.UUID, body: VerifyIn | None = None,
+                     ctx: TenantContext = Depends(require(P.WEBSITES_MANAGE)),
                      db: Session = Depends(get_db)) -> VerificationOut:
     w = get_website(db, ctx, website_id)
+    method = body.method if body else "http_file"
+    if method == "dns_txt":
+        from app.services import dns_verify
+
+        ok, message = dns_verify.check(w.hostname, w.verification_token or "")
+        if ok:
+            w.verification_status, w.verified_at = "verified", utcnow()
+        audit.record(db, "website.verification_attempt", actor=ctx.actor(), tenant_id=ctx.tenant_id,
+                     target_type="website", target_id=w.id, outcome="success" if ok else "failure",
+                     details={"method": method, "message": message})
+        db.commit()
+        return _verification_out(w, method, message)
     scheme = "https" if w.url.startswith("https://") else "http"
     port_part = ""
     check_url = f"{scheme}://{w.hostname}{port_part}{VERIFY_PATH}"
@@ -457,10 +485,9 @@ def verify_ownership(website_id: uuid.UUID, ctx: TenantContext = Depends(require
         w.verification_status, w.verified_at = "verified", utcnow()
     audit.record(db, "website.verification_attempt", actor=ctx.actor(), tenant_id=ctx.tenant_id,
                  target_type="website", target_id=w.id, outcome="success" if ok else "failure",
-                 details={"message": message})
+                 details={"method": method, "message": message})
     db.commit()
-    return VerificationOut(status=w.verification_status, method="http_file", path=VERIFY_PATH,
-                           token=w.verification_token, message=message)
+    return _verification_out(w, method, message)
 
 
 class AvailabilityOut(BaseModel):

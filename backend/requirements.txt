@@ -19,3 +19,4 @@ pyotp==2.10.0
 structlog==26.1.0
 reportlab==5.0.1
 yara-python==4.5.4
+dnspython==2.9.0
