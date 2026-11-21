@@ -567,6 +567,40 @@ def test_tenant_concurrency_limit_defers(alice, monkeypatch):
         assert db.get(ScanJob, qid).not_before is not None
 
 
+def test_scans_per_hosting_server_are_limited_across_customers(alice, bob, monkeypatch):
+    """Many customers on one shared hosting server: their file scans run a few at a time."""
+    from app.models import HostingAccount
+    from app.monitoring import jobs
+
+    monkeypatch.setattr(get_settings(), "host_max_concurrent_scans", 1)
+
+    def setup(tid, host):
+        wid = _site(tid)
+        with tenant_session(tid) as db:
+            acct = HostingAccount(tenant_id=tid, name="H", connector_type="sftp", hostname=host, port=22,
+                                  username=f"u{wid.hex[:6]}", root_path="/")
+            db.add(acct)
+            db.commit()
+            return wid, acct.id
+
+    a_site, a_acct = setup(alice[1], "shared1.host.example")
+    b_site, b_acct = setup(bob[1], "SHARED1.host.example")  # hostnames compared case-insensitively
+    with platform_session() as db:
+        db.add(ScanJob(tenant_id=alice[1], website_id=a_site, hosting_account_id=a_acct, job_type="file_scan",
+                       status="running", heartbeat_at=utcnow()))
+        queued = ScanJob(tenant_id=bob[1], website_id=b_site, hosting_account_id=b_acct, job_type="file_scan",
+                         status="queued")
+        other = ScanJob(tenant_id=bob[1], website_id=b_site, hosting_account_id=b_acct, job_type="availability",
+                        status="queued")
+        db.add_all([queued, other])
+        db.commit()
+        qid, oid = queued.id, other.id
+    assert jobs.claim(qid, "w") is None, "another customer's scan already uses this server"
+    with platform_session() as db:
+        assert db.get(ScanJob, qid).not_before is not None
+    assert jobs.claim(oid, "w") is not None, "availability checks do not touch the hosting server"
+
+
 def test_failed_job_is_never_marked_succeeded(alice, monkeypatch):
     from app.monitoring import jobs
 

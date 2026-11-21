@@ -195,7 +195,22 @@ def claim(job_id: uuid.UUID, worker: str) -> ScanJob | None:
                 ScanJob.tenant_id == job.tenant_id, ScanJob.status == "running"
             )
         ).scalar_one()
-        if running >= settings.tenant_max_concurrent_jobs:
+        busy = running >= settings.tenant_max_concurrent_jobs
+        if not busy and job.job_type == "file_scan" and job.hosting_account_id is not None:
+            # Per hosting server, across all tenants: many sites on one shared server must not be scanned
+            # at once (each scan opens parallel connections and reads every file).
+            host = s.execute(select(HostingAccount.hostname).where(
+                HostingAccount.id == job.hosting_account_id)).scalar_one_or_none()
+            if host:
+                s.execute(text("SELECT pg_advisory_xact_lock(hashtext(:k))"), {"k": f"jobs-host:{host.lower()}"})
+                on_host = s.execute(
+                    select(func.count()).select_from(ScanJob)
+                    .join(HostingAccount, HostingAccount.id == ScanJob.hosting_account_id)
+                    .where(ScanJob.status == "running", ScanJob.job_type == "file_scan",
+                           func.lower(HostingAccount.hostname) == host.lower())
+                ).scalar_one()
+                busy = on_host >= settings.host_max_concurrent_scans
+        if busy:
             job.not_before = now + timedelta(seconds=30 + random.randint(0, 30))  # noqa: S311
             s.commit()
             dispatch(job, countdown=45)

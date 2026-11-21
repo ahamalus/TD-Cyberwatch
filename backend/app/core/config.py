@@ -69,6 +69,8 @@ class Settings(BaseSettings):
     job_max_attempts: int = 3
     job_stale_after_seconds: int = 60 * 20
     tenant_max_concurrent_jobs: int = 2
+    # File scans running at once against one hosting server (by hostname), across all customers.
+    host_max_concurrent_scans: int = 2
     worker_heartbeat_seconds: int = 20
 
     # Malware scanning of retrieved file contents (ClamAV daemon + bundled YARA rules).

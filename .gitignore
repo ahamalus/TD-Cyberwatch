@@ -3,3 +3,7 @@
 local-credentials.txt
 .ruff_cache/
 .env.bak-*
+
+# Playwright
+frontend/test-results/
+frontend/playwright-report/

@@ -33,16 +33,8 @@ import { Link, Navigate, Route, Routes, useParams } from "react-router-dom";
 import { RequireAuth, useMe, usePlatformCan, useTenant } from "./api/auth";
 import { DemoBanner, ErrorState, PageHeader, Wordmark } from "./components/ui";
 import { AppShellLayout, type NavGroup, TenantSwitcher } from "./layouts/AppShellLayout";
-import * as Admin from "./pages/admin/Admin";
-import { BillingPage, ReportsPage, SupportPage, TicketPage } from "./pages/app/Commerce";
-import { FilesPage, MonitoringPage } from "./pages/app/Files";
-import { HostingDetailPage, HostingListPage, NewHostingPage } from "./pages/app/Hosting";
-import { IncidentDetailPage, IncidentsPage } from "./pages/app/Incidents";
-import { NotificationsPage } from "./pages/app/Notifications";
-import { OverviewPage } from "./pages/app/Overview";
-import { AccountSecurity, SettingsPage } from "./pages/app/Settings";
-import { NewWebsitePage, WebsiteDetailPage, WebsitesPage } from "./pages/app/Websites";
-import * as Ops from "./pages/ops/Ops";
+import { Suspense } from "react";
+import { lazyModule } from "./lazyModule";
 import {
   AcceptInvitePage,
   AppEntryRedirect,
@@ -52,6 +44,18 @@ import {
   ResetPasswordPage,
   VerifyEmailPage,
 } from "./pages/public/Auth";
+
+// Portal pages are loaded on first use, so the sign-in and landing pages stay small.
+const Admin = lazyModule<typeof import("./pages/admin/Admin")>(() => import("./pages/admin/Admin"));
+const Ops = lazyModule<typeof import("./pages/ops/Ops")>(() => import("./pages/ops/Ops"));
+const { BillingPage, ReportsPage, SupportPage, TicketPage } = lazyModule<typeof import("./pages/app/Commerce")>(() => import("./pages/app/Commerce"));
+const { FilesPage, MonitoringPage } = lazyModule<typeof import("./pages/app/Files")>(() => import("./pages/app/Files"));
+const { HostingDetailPage, HostingListPage, NewHostingPage } = lazyModule<typeof import("./pages/app/Hosting")>(() => import("./pages/app/Hosting"));
+const { IncidentDetailPage, IncidentsPage } = lazyModule<typeof import("./pages/app/Incidents")>(() => import("./pages/app/Incidents"));
+const { NotificationsPage } = lazyModule<typeof import("./pages/app/Notifications")>(() => import("./pages/app/Notifications"));
+const { OverviewPage } = lazyModule<typeof import("./pages/app/Overview")>(() => import("./pages/app/Overview"));
+const { AccountSecurity, SettingsPage } = lazyModule<typeof import("./pages/app/Settings")>(() => import("./pages/app/Settings"));
+const { NewWebsitePage, WebsiteDetailPage, WebsitesPage } = lazyModule<typeof import("./pages/app/Websites")>(() => import("./pages/app/Websites"));
 import { LandingPage } from "./pages/public/Landing";
 
 function CustomerLayout() {
@@ -251,6 +255,7 @@ function NotFound() {
 
 export function App() {
   return (
+    <Suspense fallback={<Box p="xl"><Text c="dimmed">Loading…</Text></Box>}>
     <Routes>
       <Route path="/" element={<LandingPage />} />
       <Route path="/login" element={<LoginPage />} />
@@ -318,6 +323,7 @@ export function App() {
       </Route>
       <Route path="*" element={<NotFound />} />
     </Routes>
+    </Suspense>
   );
 }
 

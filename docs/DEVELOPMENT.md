@@ -27,12 +27,16 @@ port to `CW_ALLOWED_SFTP_PORTS` (never in production).
 
 ### Tests and quality
 ```bash
-pytest                       # 104 tests; recreates the cyberwatch_test schema, uses an in-process SFTP server
+pytest                       # recreates the cyberwatch_test schema, uses an in-process SFTP server
 ruff check app tests
 pip-audit -r requirements.txt
 ```
 The suite needs PostgreSQL (`CW_DATABASE_URL` defaults to the local `cyberwatch_test` DB). No production
 credentials are required: hosting providers are a real in-process SFTP server and mocked cPanel/HTTP/Paystack.
+
+To test as production runs, set `CW_TEST_ADMIN_DATABASE_URL` to a superuser connection to the same database.
+Migrations then run as the owner and every test runs as a restricted login that cannot bypass row-level
+security (CI does this).
 
 ### Migrations
 Edit models → `alembic revision --autogenerate -m "describe change"` → review → for any new tenant-owned
@@ -48,6 +52,19 @@ npm test             # Vitest + Testing Library
 npm run typecheck
 npm run build
 ```
+
+### Browser tests (Playwright)
+`npx playwright test` drives the real application in Chromium:
+- **Customer journey:** sign up, connect the sample SFTP site, add a website, take a baseline, plant a test
+  file, see the incident, close it as a false positive, then open every customer page.
+- **Staff journey:** platform-admin MFA enrolment, then every admin and operations menu entry. It fails on
+  console errors or pages that cannot load their data.
+
+Playwright starts everything itself: `e2e/stack.sh` brings up migrations, a sample SFTP server, a Celery
+worker and the API, and `vite preview` serves the production build. It needs local PostgreSQL (a
+`cyberwatch_e2e` database owned by `cyberwatch`), Redis, and the backend Python environment
+(`E2E_PYTHON=../backend/.venv/bin/python`). CI runs it on every push and keeps the HTML report when a test
+fails.
 
 ## Conventions
 - Business logic in `services/` / `monitoring/`; routers stay thin.

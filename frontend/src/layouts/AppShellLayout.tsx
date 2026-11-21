@@ -38,11 +38,11 @@ import {
   type Icon,
 } from "@tabler/icons-react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { type ReactNode, useEffect } from "react";
+import { type ReactNode, Suspense, useEffect } from "react";
 import { Link, NavLink as RouterNavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useMe } from "../api/auth";
 import { api } from "../api/client";
-import { BrandMark, Wordmark } from "../components/ui";
+import { BrandMark, LoadingBlock, Wordmark } from "../components/ui";
 
 export interface NavItem {
   label: string;
@@ -247,7 +247,9 @@ export function AppShellLayout({
       <AppShell.Main id="main-content" style={{ background: "var(--cw-page-bg)" }}>
         <Box maw={1440} mx="auto">
           {banner}
-          <Outlet />
+          <Suspense fallback={<LoadingBlock rows={8} />}>
+            <Outlet />
+          </Suspense>
         </Box>
       </AppShell.Main>
     </AppShell>
