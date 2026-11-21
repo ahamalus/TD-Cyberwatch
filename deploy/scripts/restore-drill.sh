@@ -12,6 +12,20 @@ cd "$(dirname "$0")/../.."
 BACKUP_DIR=${BACKUP_DIR:-/var/backups/cyberwatch}
 AGE_IDENTITY=${AGE_IDENTITY:?set AGE_IDENTITY to the private key file (age-keygen output)}
 [ -r "$AGE_IDENTITY" ] || { echo "Cannot read $AGE_IDENTITY"; exit 2; }
+# Check the key before touching any backup: it must be an age private key, and the one these backups use.
+if ! KEY_PUB=$(age-keygen -y "$AGE_IDENTITY" 2>/dev/null); then
+  echo "$AGE_IDENTITY does not contain a valid backup private key."
+  echo "It must be one line starting with AGE-SECRET-KEY-1 (the key shown once by install-backups.sh), nothing else."
+  exit 2
+fi
+if [ -s /etc/cyberwatch/backup.pub ] && [ "$KEY_PUB" != "$(cat /etc/cyberwatch/backup.pub)" ]; then
+  echo "This private key does NOT match the key the backups are encrypted with:"
+  echo "    from your key:  $KEY_PUB"
+  echo "    backups use:    $(cat /etc/cyberwatch/backup.pub)"
+  echo "With this key the backups cannot be restored. Find the correct saved key, or create a new one"
+  echo "(see docs/DEPLOYMENT.md section 5)."
+  exit 2
+fi
 DUMP=${1:-$(ls -1t "$BACKUP_DIR"/db-*.dump.age 2>/dev/null | head -n 1)}
 [ -n "$DUMP" ] && [ -f "$DUMP" ] || { echo "No backup found in $BACKUP_DIR"; exit 2; }
 case "$DUMP" in /*) ;; *) DUMP="$BACKUP_DIR/$DUMP" ;; esac

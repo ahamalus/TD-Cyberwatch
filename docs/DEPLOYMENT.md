@@ -102,6 +102,13 @@ sudo shred -u /root/backup-key.txt
 It checks the checksums, restores the newest dump into a temporary database with no network, counts the records,
 verifies the audit hash chain and reads the storage archive. Record the date and result in the log below.
 
+**Lost or wrong private key.** `restore-drill.sh` checks the key first and says if it does not match. Backups made
+with a lost key cannot be restored. Create a new key and a fresh backup straight away:
+```bash
+sudo rm /etc/cyberwatch/backup.pub && sudo bash /opt/cyberwatch/deploy/scripts/install-backups.sh
+```
+Then run the drill again with the new key.
+
 **Real restore** (replaces the live database):
 ```bash
 AGE_IDENTITY=key.txt deploy/scripts/restore.sh <db-*.dump.age>
