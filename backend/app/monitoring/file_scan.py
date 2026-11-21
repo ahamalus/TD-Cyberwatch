@@ -31,6 +31,7 @@ from app.models import (
     Website,
 )
 from app.models.incidents import SEVERITY_RANK
+from app.monitoring import malware
 from app.monitoring.inventory import (
     DEFAULT_EXCLUSIONS,
     DIR_LISTED,
@@ -173,6 +174,9 @@ def _update_inventory(
             "sha256": e.sha256,
             "hash_status": e.hash_status,
             "file_type": file_type_of(e.path) if e.entry_type == "file" else None,
+            "malware_status": e.inspection.status if e.inspection else None,
+            "malware_signatures": e.inspection.signatures if e.inspection else [],
+            "malware_scanned_at": e.inspection.scanned_at if e.inspection else None,
             "state": "present",
             "first_seen_at": now,
             "last_seen_at": now,
@@ -192,6 +196,9 @@ def _update_inventory(
                 "sha256": stmt.excluded.sha256,
                 "hash_status": stmt.excluded.hash_status,
                 "file_type": stmt.excluded.file_type,
+                "malware_status": stmt.excluded.malware_status,
+                "malware_signatures": stmt.excluded.malware_signatures,
+                "malware_scanned_at": stmt.excluded.malware_scanned_at,
                 "state": "present",
                 "last_seen_at": stmt.excluded.last_seen_at,
                 "last_snapshot_id": stmt.excluded.last_snapshot_id,
@@ -340,6 +347,60 @@ def _raise_incidents(
     return opened
 
 
+def _raise_malware_incidents(db: Session, website: Website, snapshot: FileSnapshot, result: InventoryResult,
+                             tenant_is_demo: bool) -> list[uuid.UUID]:
+    """One incident per file with a fresh detection. Cached verdicts (unchanged content) do not re-alert."""
+    opened: list[uuid.UUID] = []
+    for e in result.entries.values():
+        v = e.inspection
+        if v is None or not v.fresh or v.status not in (malware.INFECTED, malware.SUSPICIOUS):
+            continue
+        confirmed = v.status == malware.INFECTED
+        sigs = [s for s in v.signatures if s.startswith("clamav:")] if confirmed else v.signatures
+        names = ", ".join(s.partition(":")[2] for s in sigs)
+        spec = DetectionSpec(
+            tenant_id=website.tenant_id,
+            website_id=website.id,
+            hosting_account_id=website.hosting_account_id,
+            title=(f"Malware detected ({names}): {e.path}" if confirmed
+                   else f"Malicious code pattern ({names}): {e.path}")[:300],
+            summary=(" ".join(malware.describe_signature(s) for s in sigs) + f" Path: {e.path}.")[:2000],
+            category="malware",
+            finding_class="confirmed_malware" if confirmed else "heuristic_suspicion",
+            severity="critical" if confirmed else "high",
+            confidence="high" if confirmed else "medium",
+            detection_source="clamav" if confirmed else "yara",
+            rule_key=sigs[0][:120],
+            dedupe_key=f"malware:{website.id}:{e.path}",
+            recommended_action=(
+                "Treat the site as compromised: do not open or run the file. Ask your hosting administrator to "
+                "take a copy for analysis, remove or restore it from a clean backup, change hosting, CMS and "
+                "database passwords, and look for how it was uploaded. CyberWatch never deletes or quarantines files."
+                if confirmed else
+                "Review the file from a safe environment (do not run it or open it in a browser). If it is not part "
+                "of the site's legitimate code, have it removed and investigate how it was added. Mark the incident "
+                "as a false positive if the code is legitimate."
+            ),
+            affected_resources=[{"type": "file", "path": e.path, "sha256": e.sha256}],
+            evidence=[EvidenceSpec(
+                kind="scan_result",
+                source="malware_scan",
+                collection_method="clamd_instream" if confirmed else "yara_rules",
+                content={"path": e.path, "sha256": e.sha256, "size": e.size, "verdict": v.status,
+                         "signatures": v.signatures, "engine": v.engine, "signature_db_version": v.db_version,
+                         "scanned_at": v.scanned_at, "snapshot_id": str(snapshot.id)},
+                reference_id=snapshot.id,
+            )],
+            requires_human_verification=not confirmed,
+            path_for_suppression=e.path,
+            is_demo=tenant_is_demo,
+        )
+        inc, created = incident_svc.raise_detection(db, spec)
+        if inc and created:
+            opened.append(inc.id)
+    return opened
+
+
 def _change_summary(c: Change) -> dict[str, Any]:
     return {
         "path": c.path,
@@ -409,10 +470,13 @@ def run_file_scan(
         if heartbeat:
             heartbeat()
 
+    # Malware inspection reuses the bytes downloaded for hashing (no second download).
+    inspector = malware.ContentInspector(db, website.id) if hash_files else None
     try:
         connector = build_connector(account, credential, definition)
         with connector.open_file_source(root) as source:
-            result = walk_inventory(source, exclusions, scan_limits(cfg), progress=progress, hash_files=hash_files)
+            result = walk_inventory(source, exclusions, scan_limits(cfg), progress=progress, hash_files=hash_files,
+                                    inspector=inspector)
     except ConnectorError as exc:
         snapshot.status = "failed"
         snapshot.failure_reason = exc.message
@@ -480,6 +544,9 @@ def run_file_scan(
     tenant = db.get(Tenant, website.tenant_id)
     opened = _raise_incidents(db, website, cfg, snapshot, changes, diff.withheld_reason if diff else None,
                               bool(tenant and tenant.is_demo))
+    if inspector is not None:
+        inspector.flush()
+        opened += _raise_malware_incidents(db, website, snapshot, result, bool(tenant and tenant.is_demo))
 
     website.last_scan_at = snapshot.completed_at
     website.last_scan_status = snapshot.status
@@ -502,5 +569,6 @@ def run_file_scan(
             "baseline": str(website.baseline_snapshot_id) if website.baseline_snapshot_id else None,
             "incidents_opened": [str(i) for i in opened],
             "dirs_listed": sum(1 for e in result.entries.values() if e.entry_type == "dir" and e.hash_status == DIR_LISTED),
+            "malware": inspector.summary() if inspector else {"unavailable_reason": "File hashing is not available."},
         },
     )

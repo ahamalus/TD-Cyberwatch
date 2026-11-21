@@ -8,7 +8,7 @@ import { useCan, useTenantId } from "../../api/auth";
 import { api, downloadUrl, errorMessage } from "../../api/client";
 import type { FileChange, Job, Page, Website } from "../../api/types";
 import { fmtBytes, fmtDateTime, fmtRelative, humanize, shortHash } from "../../components/format";
-import { HealthBadge, ScanBadge, SeverityBadge } from "../../components/status";
+import { HealthBadge, MalwareBadge, ScanBadge, SeverityBadge } from "../../components/status";
 import { DataTable, EmptyState, PageHeader, SearchInput } from "../../components/ui";
 
 function useSiteOptions() {
@@ -31,6 +31,9 @@ interface InventoryItem {
   state: string;
   first_seen_at: string;
   last_seen_at: string;
+  malware_status: string | null;
+  malware_signatures: string[];
+  malware_scanned_at: string | null;
 }
 
 export function FilesPage() {
@@ -142,11 +145,12 @@ function InventoryTable({ websiteId }: { websiteId: string }) {
   const tid = useTenantId();
   const [q, setQ] = useState("");
   const [state, setState] = useState<string | null>(null);
+  const [malware, setMalware] = useState<string | null>(null);
   const [page, setPage] = useState(1);
   const [sort, setSort] = useState("path");
   const list = useQuery({
-    queryKey: ["inventory", tid, websiteId, q, state, page, sort],
-    queryFn: () => api.get<Page<InventoryItem>>(`/tenants/${tid}/websites/${websiteId}/inventory`, { q, state: state ?? undefined, page, page_size: 50, sort }),
+    queryKey: ["inventory", tid, websiteId, q, state, malware, page, sort],
+    queryFn: () => api.get<Page<InventoryItem>>(`/tenants/${tid}/websites/${websiteId}/inventory`, { q, state: state ?? undefined, malware: malware ?? undefined, page, page_size: 50, sort }),
   });
   return (
     <Card>
@@ -154,6 +158,8 @@ function InventoryTable({ websiteId }: { websiteId: string }) {
         <SearchInput value={q} onChange={(v) => { setQ(v); setPage(1); }} placeholder="Filter by path" />
         <Select placeholder="State" clearable w={170} value={state} onChange={setState} aria-label="State"
           data={[{ value: "present", label: "Present" }, { value: "deleted", label: "Deleted (observed)" }, { value: "unverified", label: "Not observed (incomplete scan)" }]} />
+        <Select placeholder="Malware verdict" clearable w={200} value={malware} onChange={(v) => { setMalware(v); setPage(1); }} aria-label="Malware verdict"
+          data={[{ value: "flagged", label: "Malware or suspicious" }, { value: "infected", label: "Malware" }, { value: "suspicious", label: "Suspicious code" }, { value: "clean", label: "Clean" }, { value: "unavailable", label: "Not scanned" }, { value: "skipped_size", label: "Too large to scan" }]} />
       </Group>
       <DataTable<InventoryItem>
         rows={list.data?.items}
@@ -170,6 +176,7 @@ function InventoryTable({ websiteId }: { websiteId: string }) {
         columns={[
           { key: "path", header: "Path", sortable: true, render: (i) => <Text className="cw-mono">{i.path}{i.entry_type === "dir" ? "/" : ""}</Text> },
           { key: "state", header: "State", render: (i) => <HealthBadge state={i.state === "present" ? "active" : i.state === "deleted" ? "failed" : "unknown"} tooltip={i.state === "unverified" ? "Not observed in the last scan because part of the scan was incomplete. Not reported as deleted." : undefined} /> },
+          { key: "malware", header: "Malware scan", render: (i) => i.entry_type === "file" ? <MalwareBadge status={i.malware_status} signatures={i.malware_signatures} /> : null },
           { key: "size", header: "Size", sortable: true, render: (i) => <Text size="sm">{fmtBytes(i.size)}</Text>, visibleFrom: "sm" },
           { key: "sha256", header: "SHA-256", render: (i) => <Tooltip label={i.sha256 ?? humanize(i.hash_status)}><Text size="xs" className="cw-mono">{i.sha256 ? shortHash(i.sha256) : humanize(i.hash_status)}</Text></Tooltip>, visibleFrom: "md" },
           { key: "mtime", header: "Modified", sortable: true, render: (i) => <Text size="sm">{fmtDateTime(i.mtime)}</Text>, visibleFrom: "lg" },

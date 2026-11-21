@@ -7,7 +7,7 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError, errorMessage } from "../api/client";
 import { humanize, minCharsHint } from "../components/format";
-import { CapabilityBadge, HealthBadge, ScanBadge, SeverityBadge } from "../components/status";
+import { CapabilityBadge, HealthBadge, MalwareBadge, ScanBadge, SeverityBadge } from "../components/status";
 import { DataTable, ErrorState } from "../components/ui";
 import { theme } from "../design/theme";
 import { LoginPage } from "../pages/public/Auth";
@@ -150,5 +150,18 @@ describe("minCharsHint", () => {
     expect(minCharsHint("   ", 5)).toBe("At least 5 characters (0/5).");
     expect(minCharsHint("Ticket 4821 follow-up", 10, "Why access is needed.")).toBe("Why access is needed.");
     expect(minCharsHint("long enough", 5)).toBeUndefined();
+  });
+});
+
+
+describe("MalwareBadge", () => {
+  it("labels verdicts honestly and shows nothing for uninspected entries", () => {
+    const { rerender } = render(<MantineProvider theme={theme}><MalwareBadge status="infected" signatures={["clamav:Eicar-Test-Signature"]} /></MantineProvider>);
+    expect(screen.getByText("Malware")).toBeInTheDocument();
+    rerender(<MantineProvider theme={theme}><MalwareBadge status="unavailable" /></MantineProvider>);
+    expect(screen.getByText("Not scanned")).toBeInTheDocument();
+    expect(screen.queryByText("Clean")).not.toBeInTheDocument();
+    rerender(<MantineProvider theme={theme}><MalwareBadge status={null} /></MantineProvider>);
+    expect(screen.getByText("—")).toBeInTheDocument();
   });
 });

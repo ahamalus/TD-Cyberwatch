@@ -144,3 +144,11 @@ only on the local tunnel entrance, so visitors cannot forge their address for ra
 
 DNS changes for trustdata.ng are made in Cloudflare from now on. Edits in the cPanel Zone Editor no longer take effect.
 
+## Malware scanner memory
+
+CyberWatch runs the ClamAV malware scanner inside the CyberWatch VM, which needs about 2 GB more memory.
+**Give the CyberWatch VM 12 GB.** On the Windows host, shut the VM down, then run:
+```powershell
+Stop-VM cyberwatch; Set-VMMemory cyberwatch -StartupBytes 12GB; Start-VM cyberwatch
+```
+

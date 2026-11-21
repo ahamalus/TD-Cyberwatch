@@ -288,8 +288,8 @@ class CPanelUAPIConnector(Connector):
             Capability.LOG_ACCESS, UNTESTED, "Log retrieval through UAPI is not implemented in this release."
         )
         results[Capability.WEBSITE_MALWARE_SCAN] = CapabilityResult(
-            Capability.WEBSITE_MALWARE_SCAN, UNSUPPORTED,
-            "Platform-side malware scanning of retrieved files is not yet enabled in this release.",
+            Capability.WEBSITE_MALWARE_SCAN, UNTESTED,
+            "Decided by the platform scanner when capabilities are stored (see monitoring.jobs).",
         )
         results[Capability.HOSTING_MALWARE_SCAN] = CapabilityResult(
             Capability.HOSTING_MALWARE_SCAN, UNTESTED,

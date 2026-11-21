@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.db.base import utcnow
 from app.models import HostingAccount, Notification, PlatformSetting, ScanJob, SchedulerState, WorkerHeartbeat
+from app.monitoring.malware import scanner_status
 from app.services.notifications import channel_status
 
 QUEUES = ["monitoring", "checks", "notifications", "default"]
@@ -93,8 +94,14 @@ def system_health(db: Session) -> dict[str, Any]:
             alerts.append({"severity": "high", "message": "No successful backup in the last 36 hours."})
         elif (backup.value or {}).get("status") != "ok":
             alerts.append({"severity": "medium", "message": "The most recent backup failed."})
+    scanner = scanner_status()
+    if not scanner["ok"]:
+        alerts.append({"severity": "high", "message": f"Malware scanner unavailable: {scanner.get('error')}"})
+    elif (scanner.get("db_age_hours") or 0) > 72:
+        alerts.append({"severity": "medium", "message": "Malware signatures are more than 3 days old (check freshclam)."})
     return {
         "checked_at": now,
+        "malware_scanner": scanner,
         "database": db_h,
         "redis": redis_h,
         "workers": workers,

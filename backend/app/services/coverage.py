@@ -81,7 +81,9 @@ def website_coverage(db: Session, website: Website, cfg: MonitoringConfig | None
             "key": key, "label": CAPABILITY_LABELS[cap],
             "state": "available" if status == "available" else ("unsupported" if status == "unsupported" else "unavailable"),
             "detail": {
-                "malware": "Malware scanning is not enabled in this release.",
+                "malware": ("Each retrieved file is checked by ClamAV and CyberWatch's YARA rules; verdicts appear in the file list."
+                            if status == "available" else
+                            "Malware scanning is not available for this connection. Run a connection test once the scanner is enabled."),
                 "log_analysis": "Log analysis requires verified log access.",
                 "realtime_events": "Polling-based monitoring cannot observe changes between scans.",
             }[key],

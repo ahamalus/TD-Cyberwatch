@@ -71,6 +71,14 @@ class Settings(BaseSettings):
     tenant_max_concurrent_jobs: int = 2
     worker_heartbeat_seconds: int = 20
 
+    # Malware scanning of retrieved file contents (ClamAV daemon + bundled YARA rules).
+    # clamav_host empty = ClamAV not configured: files are reported "not scanned", never "clean".
+    clamav_host: str | None = None
+    clamav_port: int = 3310
+    clamav_timeout_seconds: float = 30.0
+    malware_max_file_bytes: int = 10 * 1024 * 1024
+    malware_rescan_days: int = 7
+
     # Notifications
     smtp_host: str | None = None
     smtp_port: int = 587
@@ -96,7 +104,7 @@ class Settings(BaseSettings):
     # Bootstrap administrator (only consumed by the bootstrap CLI command)
     bootstrap_admin_email: str | None = None
 
-    @field_validator("cookie_domain", "smtp_host", "smtp_username", "whatsapp_phone_number_id", mode="before")
+    @field_validator("cookie_domain", "smtp_host", "smtp_username", "whatsapp_phone_number_id", "clamav_host", mode="before")
     @classmethod
     def _blank_to_none(cls, v: object) -> object:
         return None if isinstance(v, str) and not v.strip() else v

@@ -18,7 +18,7 @@ sent to the internet. Every email lands in a local inbox.
 
 | | |
 |---|---|
-| Computer | Windows 10/11, macOS or Linux with **8 GB RAM** (16 GB recommended) and 10 GB free disk |
+| Computer | Windows 10/11, macOS or Linux with **8 GB RAM** (16 GB recommended; the ClamAV malware scanner uses about 2 GB) and 10 GB free disk |
 | Docker | [Docker Desktop](https://www.docker.com/products/docker-desktop/), installed and **running**. On Windows, accept the WSL 2 option during installation. |
 | Internet | Only for the first start, to download base images and libraries (about 1.5 GB) |
 
@@ -101,6 +101,12 @@ It then prints the sign-in details and saves them to `local-credentials.txt`:
 7. **Scan again** by clicking **Scan files**. The results are:
    - The scan reports **3 changes**: 1 added, 1 modified and 1 deleted.
    - A **High** incident opens: *Suspicious file added: wp-content/uploads/wso-shell.php*. It has hashed evidence and a risk explanation.
+   - The malware scan flags the same file's **contents**: a second **High** incident, *Malicious code pattern
+     (php_eval_of_decoded_payload)*, from CyberWatch's YARA rules.
+   - In **File Integrity → File inventory**, filter **Malware verdict → Malware or suspicious** to see it.
+
+   ClamAV downloads about 300 MB of signatures the first time it starts. During the first few minutes,
+   files show **Not scanned**; they are never shown as clean while the scanner is not ready.
    - The alert email arrives in Mailpit within about 30 seconds.
 8. **Work the incident.** Acknowledge it, add notes and resolve it. You can also try **Reports** (CSV/PDF) and **Support**.
    Sign in as the platform admin to see Administration, and the dark Operations portal at http://localhost:8080/ops/overview.

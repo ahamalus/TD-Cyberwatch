@@ -8,7 +8,6 @@ import { notifications } from "@mantine/notifications";
 import {
   IconActivity,
   IconAlertTriangle,
-  IconBug,
   IconClockPause,
   IconCpu,
   IconFileSearch,
@@ -162,10 +161,11 @@ export function DiagnosticsPage() {
   );
 }
 
-export function OpsIncidentsPage() {
+export function OpsIncidentsPage({ fixedCategory }: { fixedCategory?: string } = {}) {
   const can = usePlatformCan();
   const [severity, setSeverity] = useState<string[]>([]);
-  const [category, setCategory] = useState<string | null>(null);
+  const [chosenCategory, setCategory] = useState<string | null>(null);
+  const category = fixedCategory ?? chosenCategory;
   const [page, setPage] = useState(1);
   const [action, setAction] = useState<{ id: string; ref: string } | null>(null);
   const [form, setForm] = useState({ action: "", note: "" });
@@ -174,11 +174,11 @@ export function OpsIncidentsPage() {
   if (q.error) return <ErrorState error={q.error} />;
   return (
     <>
-      <PageHeader title="Global incident oversight" description="Open incidents across customers. Titles and evidence are shown only for customers who granted your team access." />
+      {!fixedCategory && <PageHeader title="Global incident oversight" description="Open incidents across customers. Titles and evidence are shown only for customers who granted your team access." />}
       <Card>
         <Group mb="md">
           <MultiSelect placeholder="Severity" w={240} data={["critical", "high", "medium", "low"].map((v) => ({ value: v, label: humanize(v) }))} value={severity} onChange={setSeverity} aria-label="Severity" />
-          <Select placeholder="Category" clearable w={200} data={["file_integrity", "suspicious_file", "availability", "tls", "connection"].map((v) => ({ value: v, label: humanize(v) }))} value={category} onChange={setCategory} aria-label="Category" />
+          {!fixedCategory && <Select placeholder="Category" clearable w={200} data={["malware", "file_integrity", "suspicious_file", "availability", "tls", "connection"].map((v) => ({ value: v, label: humanize(v) }))} value={category} onChange={setCategory} aria-label="Category" />}
         </Group>
         <DataTable
           rows={q.data?.items}
@@ -234,6 +234,37 @@ export function OpsNotificationsPage() {
   );
 }
 
+/** ClamAV + YARA status from the health endpoint. */
+function MalwareScannerSection({ scanner }: { scanner: any }) {
+  if (!scanner) return null;
+  const age = scanner.db_age_hours as number | null | undefined;
+  return (
+    <Section title="Malware scanner" description="ClamAV checks retrieved file contents; YARA rules flag web-shell code for review.">
+      <HealthBadge state={!scanner.ok ? "failed" : !scanner.db_version || (age ?? 0) > 72 ? "degraded" : "healthy"} />
+      {scanner.ok ? (
+        <KeyValue items={[
+          ["Engine", scanner.engine],
+          ["Signatures", scanner.db_version ? `${scanner.db_version} · ${age === null || age === undefined ? "age unknown" : `${Math.round(age)} h old`}` : "No official signature database loaded"],
+          ["YARA rules", scanner.yara_ok ? `version ${scanner.yara_rules_version}` : "Not loaded"],
+        ]} />
+      ) : (
+        <Text size="sm" c="dimmed" mt="xs">{scanner.error} Files are reported as "not scanned", never as clean.</Text>
+      )}
+    </Section>
+  );
+}
+
+export function OpsMalwarePage() {
+  const health = useQuery({ queryKey: ["ops-health"], queryFn: () => api.get<any>("/ops/health"), refetchInterval: 30_000, retry: false });
+  return (
+    <>
+      <PageHeader title="Malware findings" description="Signature matches (ClamAV, confirmed malware) and YARA code-pattern matches (suspicious, needs review) across customers. CyberWatch never deletes or quarantines files." />
+      {health.data && <Box mb="md"><MalwareScannerSection scanner={health.data.malware_scanner} /></Box>}
+      <OpsIncidentsPage fixedCategory="malware" />
+    </>
+  );
+}
+
 export function WorkerHealthPage() {
   const q = useQuery({ queryKey: ["ops-health"], queryFn: () => api.get<any>("/ops/health"), refetchInterval: 15_000, retry: false });
   if (q.error) return <ErrorState error={q.error} />;
@@ -256,6 +287,7 @@ export function WorkerHealthPage() {
         <Section title="Disk">
           {d.disk.used_pct !== undefined ? <KeyValue items={[["Used", `${d.disk.used_pct}%`], ["Free", fmtBytes(d.disk.free_bytes)]]} /> : <Text size="sm">Unavailable</Text>}
         </Section>
+        <MalwareScannerSection scanner={d.malware_scanner} />
         <Section title="Backups">
           {d.backup ? <KeyValue items={[["Status", <HealthBadge key="b" state={d.backup.status === "ok" ? "healthy" : "failed"} />], ["Reported", fmtDateTime(d.backup.reported_at)], ["Location", d.backup.location]]} /> : <Text size="sm" c="amber.5">No backup has been reported.</Text>}
         </Section>
@@ -279,10 +311,9 @@ export function WorkerHealthPage() {
 }
 
 /** Honest placeholder views for capabilities that are not active in this release. */
-export function CapabilityNoticePage({ kind }: { kind: "files" | "malware" | "logs" | "evidence" }) {
+export function CapabilityNoticePage({ kind }: { kind: "files" | "logs" | "evidence" }) {
   const content = {
     files: { title: "File inventory and integrity", icon: IconFileSearch, body: "Customer file inventories, baselines and change history are customer data. Open a customer workspace through an approved managed-service grant to investigate.", link: "/admin/grants", linkLabel: "Request or use a grant" },
-    malware: { title: "Malware findings", icon: IconBug, body: "Signature-based malware scanning (ClamAV/YARA) is not enabled in this release. Heuristic suspicious-file findings appear as incidents under the 'Suspicious file' category and are never presented as confirmed malware.", link: "/ops/incidents", linkLabel: "View suspicious-file incidents" },
     logs: { title: "Log and attack analysis", icon: IconListDetails, body: "Log analysis is not active. No connection has a verified, implemented log-access capability in this release; CyberWatch does not claim log analysis where logs are unavailable.", link: "/ops/diagnostics", linkLabel: "Review connection capabilities" },
     evidence: { title: "Evidence store", icon: IconLock, body: "Incident evidence is hashed at collection and stored per customer. Access it from the incident page inside a customer workspace, under an approved grant. Integrity is verified on every view.", link: "/admin/grants", linkLabel: "Managed-service grants" },
   }[kind];
@@ -291,7 +322,7 @@ export function CapabilityNoticePage({ kind }: { kind: "files" | "malware" | "lo
     <>
       <PageHeader title={content.title} />
       <Card>
-        <EmptyState icon={IconCmp} title={kind === "malware" || kind === "logs" ? "Not available in this release" : "Customer data requires a grant"} description={content.body}
+        <EmptyState icon={IconCmp} title={kind === "logs" ? "Not available in this release" : "Customer data requires a grant"} description={content.body}
           action={<Button component={Link} to={content.link} variant="light">{content.linkLabel}</Button>} />
       </Card>
     </>

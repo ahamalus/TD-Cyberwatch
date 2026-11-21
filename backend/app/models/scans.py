@@ -181,9 +181,17 @@ class FileInventoryItem(UUIDPk, Base):
     first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     last_snapshot_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    # Malware verdict for the current content: infected | suspicious | clean | skipped_size | unavailable | error.
+    # NULL = never inspected (e.g. scanned before malware scanning existed, or not a regular file).
+    malware_status: Mapped[str | None] = mapped_column(String(16))
+    malware_signatures: Mapped[list[str]] = mapped_column(
+        ARRAY(String(200)), default=list, server_default=text("'{}'"), nullable=False
+    )
+    malware_scanned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     __table_args__ = (
         UniqueConstraint("website_id", "path", name="uq_inventory_website_path"),
+        Index("ix_inventory_tenant_malware", "tenant_id", "malware_status"),
         Index("ix_inventory_tenant_website_state", "tenant_id", "website_id", "state"),
     )
 
@@ -305,3 +313,25 @@ __all__ = [
     "TlsCheck",
     "WorkerHeartbeat",
 ]
+
+
+class MalwareVerdict(UUIDPk, Base):
+    """Scan result cache keyed by content hash, shared across sites: identical bytes are scanned once per
+    ``malware_rescan_days``. Holds no paths, names or tenant data, so it is not tenant-scoped."""
+
+    __tablename__ = "malware_verdicts"
+
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    # Engines and rule-set version that produced the verdict, e.g. "clamav+yara-1a2b3c4d5e6f".
+    scanner_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)  # infected | suspicious | clean
+    signatures: Mapped[list[str]] = mapped_column(ARRAY(String(200)), default=list, nullable=False)
+    engine: Mapped[str | None] = mapped_column(String(80))
+    db_version: Mapped[str | None] = mapped_column(String(40))
+    scanned_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("sha256", "scanner_key", name="uq_malware_verdict_hash_scanner"),
+        Index("ix_malware_verdicts_scanned_at", "scanned_at"),
+    )
+

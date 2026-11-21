@@ -8,6 +8,10 @@
 - **Backups**: `sudo bash /opt/cyberwatch/deploy/scripts/healthcheck.sh` shows a `backup` line. The Windows host log
   `C:\ProgramData\CyberWatch\backup-pull.log` shows the daily off-server copy. Setup and drills: DEPLOYMENT.md §5.
 
+- **Malware scanner**: the `malware scanner` line of `healthcheck.sh` (engine, signature version and age, YARA rules).
+  Signatures older than 3 days or an unreachable scanner turn it red; scans then report files as "not scanned".
+  Check the container with `docker compose logs --tail 50 clamav`. The first start downloads about 300 MB of signatures.
+
 ## Common problems
 
 | Symptom | Likely cause | Action |

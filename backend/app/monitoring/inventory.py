@@ -28,6 +28,7 @@ from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Any, Protocol
 
 from app.connectors.base import ConnectorError, FileSource, join_rel
 
@@ -65,6 +66,8 @@ class EntryRecord:
     sha256: str | None = None
     hash_status: str = "not_applicable"
     symlink_target: str | None = None
+    # Content inspection result (e.g. a malware Verdict) when an inspector was used.
+    inspection: Any = None
 
 
 @dataclass
@@ -112,13 +115,27 @@ def matches_any(path: str, patterns: list[str], is_dir: bool = False) -> bool:
     return False
 
 
-def hash_stream(chunks) -> tuple[str, int]:
+def hash_stream(chunks, keep_up_to: int = 0) -> tuple[str, int, bytes | None]:
+    """SHA-256 of the stream. With ``keep_up_to`` > 0 the content is also returned when it is no larger
+    than that many bytes (for content inspection without a second download), otherwise None."""
     h = hashlib.sha256()
     n = 0
+    kept: list[bytes] | None = [] if keep_up_to > 0 else None
     for chunk in chunks:
         h.update(chunk)
         n += len(chunk)
-    return h.hexdigest(), n
+        if kept is not None:
+            if n > keep_up_to:
+                kept = None
+            else:
+                kept.append(chunk)
+    return h.hexdigest(), n, (b"".join(kept) if kept is not None else None)
+
+
+class ContentInspector(Protocol):
+    max_bytes: int
+
+    def inspect(self, path: str, sha256: str, data: bytes | None) -> Any: ...
 
 
 def walk_inventory(
@@ -127,6 +144,7 @@ def walk_inventory(
     limits: ScanLimits,
     progress: Callable[[InventoryResult], None] | None = None,
     hash_files: bool = True,
+    inspector: ContentInspector | None = None,
 ) -> InventoryResult:
     result = InventoryResult(status="completed")
     started = time.monotonic()
@@ -201,9 +219,12 @@ def walk_inventory(
                     result.limits_hit.add("total_bytes")
                 else:
                     try:
-                        digest, n = hash_stream(source.read_chunks(rel))
+                        keep = inspector.max_bytes if inspector and (child.size is None or child.size <= inspector.max_bytes) else 0
+                        digest, n, data = hash_stream(source.read_chunks(rel), keep_up_to=keep)
                         rec.sha256 = digest
                         rec.hash_status = "hashed"
+                        if inspector is not None:
+                            rec.inspection = inspector.inspect(rel, digest, data)
                         rec.size = n if rec.size is None else rec.size
                         budget -= n
                         result.bytes_hashed += n

@@ -53,8 +53,8 @@ Last updated: 2026-10-19 (session 1). Statuses: **Not Started · In Progress · 
 | Email notifications | Tested (mock SMTP) | Live SMTP not configured in session |
 | WhatsApp Cloud API adapter | Implemented (mock-tested) | Needs Meta account, approved templates; delivery webhooks not processed |
 | Role-based recipients, escalation, quiet hours, quotas, idempotency, retries, fallback | Tested | |
-| ClamAV integration | **Not Started** | Requires sandboxed scanner service; capability shown as unsupported |
-| YARA integration | **Not Started** | |
+| ClamAV integration | Tested | `monitoring/malware.py`: clamd INSTREAM on the bytes already downloaded for hashing; signature hits are confirmed malware (Critical incident); verdict cache by SHA-256 with weekly rescan; files over 10 MB reported "too large to scan"; scanner outage reported "not scanned", never "clean". Verified against real ClamAV 1.4.7 (EICAR) and an in-process clamd for tests |
+| YARA integration | Tested | `monitoring/yara_rules/webshells.yar` (6 PHP web-shell rules, heuristic → High incident needing review); 0 false positives on 40,079 real files (348 MB of npm and Python packages); rule changes need a regression test |
 | Log analysis | **Not Started** | Shown as unavailable; never claimed |
 
 ### Phase 3 — Client portal
@@ -92,7 +92,7 @@ Last updated: 2026-10-19 (session 1). Statuses: **Not Started · In Progress · 
 - `age` key pair for backups; off-site backup storage.
 
 ## Known limitations
-- Polling-based detection only; no real-time file events, malware engines or log analysis yet.
+- Polling-based detection only; no real-time file events or log analysis yet. Malware scanning covers files up to 10 MB that CyberWatch can read; it cannot see what is never written to disk (e.g. injected database content).
 - cPanel connector unverified against a live server.
 - Risk scoring is a simple documented heuristic.
 - Frontend bundle not code-split; UI not independently accessibility-audited.

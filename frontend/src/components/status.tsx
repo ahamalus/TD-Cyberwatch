@@ -181,3 +181,22 @@ export function Dot({ tone, label }: { tone: Tone; label: string }) {
     </Group>
   );
 }
+
+const MALWARE: Record<string, Spec> = {
+  infected: { tone: "threat", icon: IconAlertOctagon, label: "Malware" },
+  suspicious: { tone: "amber", icon: IconAlertTriangle, label: "Suspicious code" },
+  clean: { tone: "secure", icon: IconShieldCheck, label: "Clean" },
+  skipped_size: { tone: "gray", icon: IconBan, label: "Too large to scan" },
+  unavailable: { tone: "gray", icon: IconShieldQuestion, label: "Not scanned" },
+  error: { tone: "gray", icon: IconCircleX, label: "Scan error" },
+};
+
+/** Malware verdict for one file. "Clean" is only ever shown when ClamAV actually scanned the content. */
+export function MalwareBadge({ status, signatures }: { status?: string | null; signatures?: string[] }) {
+  if (!status) return <Text size="xs" c="dimmed">—</Text>;
+  const tip = signatures && signatures.length > 0
+    ? signatures.map((s) => s.replace(/^clamav:/, "ClamAV: ").replace(/^yara:/, "YARA rule: ")).join(", ")
+    : status === "unavailable" ? "The malware scanner was not available during this scan." : undefined;
+  return <StatusBadge spec={MALWARE[status] ?? MALWARE.unavailable} value={status} tooltip={tip} />;
+}
+

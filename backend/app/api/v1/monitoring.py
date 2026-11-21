@@ -111,6 +111,7 @@ def inventory(
     entry_type: str | None = Query(None, pattern="^(file|dir|symlink|other)$"),
     file_type: str | None = Query(None, max_length=32),
     hash_status: str | None = Query(None, max_length=16),
+    malware: str | None = Query(None, pattern="^(infected|suspicious|clean|skipped_size|unavailable|error|flagged)$"),
     sort: str = Query("path", pattern="^-?(path|size|mtime|last_seen_at|first_seen_at)$"),
 ) -> dict:
     w = _website(db, ctx, website_id)
@@ -125,13 +126,18 @@ def inventory(
         query = query.where(FileInventoryItem.file_type == file_type)
     if hash_status:
         query = query.where(FileInventoryItem.hash_status == hash_status)
+    if malware == "flagged":
+        query = query.where(FileInventoryItem.malware_status.in_(["infected", "suspicious"]))
+    elif malware:
+        query = query.where(FileInventoryItem.malware_status == malware)
     col = getattr(FileInventoryItem, sort.lstrip("-"))
     query = query.order_by(col.desc().nulls_last() if sort.startswith("-") else col.asc().nulls_last(),
                            FileInventoryItem.id)
     return paginate(db, query, params, lambda i: {
         "path": i.path, "entry_type": i.entry_type, "size": i.size, "mtime": i.mtime, "sha256": i.sha256,
         "hash_status": i.hash_status, "file_type": i.file_type, "state": i.state, "first_seen_at": i.first_seen_at,
-        "last_seen_at": i.last_seen_at,
+        "last_seen_at": i.last_seen_at, "malware_status": i.malware_status, "malware_signatures": i.malware_signatures,
+        "malware_scanned_at": i.malware_scanned_at,
     })
 
 

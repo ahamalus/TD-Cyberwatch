@@ -30,7 +30,7 @@ from sqlalchemy import func, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.connectors.base import RETRYABLE_CODES, ConnectorError
+from app.connectors.base import AVAILABLE, RETRYABLE_CODES, UNAVAILABLE, Capability, CapabilityResult, ConnectorError
 from app.connectors.registry import build_connector
 from app.core.config import get_settings
 from app.core.logging import get_logger
@@ -49,6 +49,7 @@ from app.models import (
     TlsCheck,
     Website,
 )
+from app.monitoring import malware
 from app.monitoring.availability import check_availability, check_tls
 from app.monitoring.file_scan import ScanPreconditionFailed, run_file_scan
 from app.services import audit
@@ -350,6 +351,26 @@ def _account_bundle(db: Session, account_id: uuid.UUID):
     return account, cred, definition
 
 
+def _platform_malware_capability(caps: list[CapabilityResult]) -> list[CapabilityResult]:
+    """Malware scanning is done by CyberWatch on the file contents it retrieves, so it depends on content
+    access through this connection and on the platform scanner, not on the hosting provider."""
+    content = any(c.capability == Capability.FILE_CONTENT_READ and c.status == AVAILABLE for c in caps)
+    if not content:
+        result = CapabilityResult(Capability.WEBSITE_MALWARE_SCAN, UNAVAILABLE,
+                                  "File contents cannot be read through this connection, so they cannot be scanned.")
+    else:
+        st = malware.scanner_status()
+        if st["ok"]:
+            result = CapabilityResult(
+                Capability.WEBSITE_MALWARE_SCAN, AVAILABLE,
+                f"CyberWatch scans retrieved files with {st['engine']} (signatures {st.get('db_version') or 'unknown'}) "
+                f"and its YARA web-shell rules (version {st['yara_rules_version']}).")
+        else:
+            result = CapabilityResult(Capability.WEBSITE_MALWARE_SCAN, UNAVAILABLE,
+                                      f"CyberWatch's malware scanner is not available: {st.get('error')}")
+    return [c for c in caps if c.capability != Capability.WEBSITE_MALWARE_SCAN] + [result]
+
+
 @handler("connection_test")
 @handler("capability_discovery")
 def handle_connection_test(db: Session, job: ScanJob, beat: Callable[[], None]) -> tuple[str, dict]:
@@ -407,6 +428,7 @@ def handle_connection_test(db: Session, job: ScanJob, beat: Callable[[], None]) 
                                    success=False, connector_version=connector.version, profile={},
                                    diagnostics=summary["diagnostics"]))
         return "partial", summary
+    caps = _platform_malware_capability(caps)
     profile = {}
     for c in caps:
         profile[c.capability.value] = {"status": c.status, "detail": c.detail}

@@ -22,9 +22,11 @@
     EdgeVm = "edge"
 
     # Existing: jitsi-meet (192.168.1.240, 8 GB) is not listed here and is never touched.
+    # cyberwatch has 12 GB: about 2 GB of it is the ClamAV malware scanner. For a VM created earlier with 8 GB, run
+    # (with the VM shut down): Set-VMMemory cyberwatch -StartupBytes 12GB
     VMs = @(
         @{ Name = "edge";       IP = "192.168.1.241"; vCPU = 2; MemoryGB = 2; DiskGB = 20;  CpuWeight = 150; Purpose = "Caddy: HTTPS for every subdomain on 98.97.76.237" }
-        @{ Name = "cyberwatch"; IP = "192.168.1.242"; vCPU = 4; MemoryGB = 8; DiskGB = 120; CpuWeight = 100; Purpose = "TrustData CyberWatch (cyberwatch.trustdata.ng)" }
+        @{ Name = "cyberwatch"; IP = "192.168.1.242"; vCPU = 4; MemoryGB = 12; DiskGB = 120; CpuWeight = 100; Purpose = "TrustData CyberWatch (cyberwatch.trustdata.ng)" }
     )
 
     # Jitsi's UDP 10000 is already forwarded by the router to 192.168.1.240; leave it as it is.

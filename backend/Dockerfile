@@ -15,7 +15,7 @@ COPY requirements.txt requirements.lock ./
 RUN --mount=type=secret,id=extra_ca \
     if [ -s /run/secrets/extra_ca ]; then export PIP_CERT=/run/secrets/extra_ca; fi; \
     pip install -r requirements.txt -c requirements.lock \
- && python -c "import kombu.transport.redis, celery, redis, psycopg, sqlalchemy, fastapi, uvicorn, paramiko, argon2"
+ && python -c "import kombu.transport.redis, celery, redis, psycopg, sqlalchemy, fastapi, uvicorn, paramiko, argon2, yara"
 COPY alembic.ini ./
 COPY alembic ./alembic
 COPY app ./app

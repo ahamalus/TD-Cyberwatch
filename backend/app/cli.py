@@ -150,6 +150,23 @@ def cmd_send_test_email(to: str) -> None:
     print(f"Check the inbox of {to}, including the spam folder.")
 
 
+def _malware_health() -> tuple[bool, str, str]:
+    from app.monitoring.malware import scanner_status
+
+    st = scanner_status()
+    if not st["ok"]:
+        return False, "malware scanner", f"{st.get('error')} Files are reported 'not scanned', never 'clean'."
+    if not st["yara_ok"]:
+        return False, "malware scanner", "YARA rules not loaded (yara-python missing)"
+    age = st.get("db_age_hours")
+    if not st.get("db_version"):
+        return False, "malware scanner", f"{st['engine']} reports no official signature database (freshclam has not run)"
+    if age is not None and age > 72:
+        return False, "malware scanner", f"{st['engine']}: signatures {age:.0f} hours old (freshclam not updating)"
+    return True, "malware scanner", (f"{st['engine']}, signatures {st.get('db_version')} "
+                                     f"({'age unknown' if age is None else f'{age:.0f}h old'}), YARA rules {st['yara_rules_version']}")
+
+
 def _email_health(db) -> tuple[bool, str, str]:
     from datetime import timedelta
     from email.utils import parseaddr
@@ -221,6 +238,7 @@ def cmd_health() -> None:
         checks.append((stuck == 0, "job queue", "no checks waiting over 20 minutes" if stuck == 0 else f"{stuck} checks waiting over 20 minutes"))
         res = audit.verify_chain(db)
         checks.append((res.valid, "audit trail", f"{res.events_checked} events, chain {'intact' if res.valid else 'BROKEN at ' + str(res.first_invalid_seq)}"))
+        checks.append(_malware_health())
         checks.append(_email_health(db))
         checks.append(_backup_health(db))
         disk = h.get("disk", {})

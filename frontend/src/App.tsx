@@ -308,7 +308,7 @@ export function App() {
         <Route path="jobs" element={<Ops.ScanQueuePage />} />
         <Route path="diagnostics" element={<Ops.DiagnosticsPage />} />
         <Route path="files" element={<Ops.CapabilityNoticePage kind="files" />} />
-        <Route path="malware" element={<Ops.CapabilityNoticePage kind="malware" />} />
+        <Route path="malware" element={<Ops.OpsMalwarePage />} />
         <Route path="logs" element={<Ops.CapabilityNoticePage kind="logs" />} />
         <Route path="evidence" element={<Ops.CapabilityNoticePage kind="evidence" />} />
         <Route path="incidents" element={<Ops.OpsIncidentsPage />} />

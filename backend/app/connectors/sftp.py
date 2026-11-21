@@ -335,8 +335,8 @@ class SFTPConnector(Connector):
             source.close()
 
         results[Capability.WEBSITE_MALWARE_SCAN] = CapabilityResult(
-            Capability.WEBSITE_MALWARE_SCAN, UNSUPPORTED,
-            "Platform-side malware scanning of retrieved files is not yet enabled in this release.",
+            Capability.WEBSITE_MALWARE_SCAN, UNTESTED,
+            "Decided by the platform scanner when capabilities are stored (see monitoring.jobs).",
         )
         results[Capability.HOSTING_MALWARE_SCAN] = CapabilityResult(
             Capability.HOSTING_MALWARE_SCAN, UNSUPPORTED, "SFTP cannot run or query server-side malware scanners."
