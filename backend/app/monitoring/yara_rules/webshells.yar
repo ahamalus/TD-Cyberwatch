@@ -22,8 +22,10 @@ rule php_request_input_to_command_execution
     meta:
         description = "PHP passes data from the web request straight to a system command or code execution function, letting an attacker run commands on the server."
     strings:
-        $a = /(system|exec|shell_exec|passthru|popen|proc_open|pcntl_exec|assert|eval)\s*\(\s*(stripslashes\s*\(\s*)?\$_(GET|POST|REQUEST|COOKIE|SERVER)\s*\[/ nocase
-        $b = /`\s*\$_(GET|POST|REQUEST|COOKIE)\s*\[/
+        $a = /\b(system|exec|shell_exec|passthru|popen|proc_open|pcntl_exec|assert|eval)\s*\(\s*(stripslashes\s*\(\s*)?\$_(GET|POST|REQUEST|COOKIE|SERVER)\s*\[/ nocase
+        // Backtick execution only when the result is used (assignment, echo, print, return). Documentation
+        // comments (e.g. WordPress docblocks) quote request variables in Markdown backticks.
+        $b = /(=|\becho|\bprint|\breturn)\s*`\s*\$_(GET|POST|REQUEST|COOKIE)\s*\[[^`]{1,80}`/
     condition:
         any of them
 }

@@ -15,7 +15,7 @@ from app.core.config import get_settings
 from app.core.http import set_transport_factory
 from app.db.base import utcnow
 from app.db.session import platform_session, tenant_session
-from app.models import Notification, Plan, ScanJob, Subscription, Website
+from app.models import Incident, Notification, Plan, ScanJob, Subscription, Website
 from app.monitoring.inventory import ScanLimits, diff_inventories, matches_any, walk_inventory
 from app.monitoring.rules import classify_change
 from app.services import audit
@@ -825,3 +825,29 @@ def test_backup_health_tracks_last_success_across_failures(monkeypatch):
         ok, _, detail = cli._backup_health(db)
         assert not ok and "48 hours ago" in detail
         assert datetime.fromisoformat(old)
+
+
+def test_bulk_close_incidents_as_false_positive(alice, bob):
+    s, tid = alice
+    wid = _site(tid)
+    ids = [_incident(tid, wid) for _ in range(3)]
+    with platform_session() as db:
+        db.execute(text("SELECT set_config('app.scope','platform',true)"))
+        first = db.get(Incident, ids[0])
+        first.status = "closed"
+        first.resolution_notes = "already handled"
+        db.commit()
+    r = s.post(f"/api/v1/tenants/{tid}/incidents/bulk-status",
+               json={"incident_ids": [str(i) for i in ids], "status": "closed", "false_positive": True,
+                     "note": "YARA rule misfired on WordPress core docblocks"})
+    assert r.status_code == 200, r.text
+    assert r.json() == {"updated": 2, "unchanged": 1, "skipped": []}
+    for iid in ids[1:]:
+        inc = s.get(f"/api/v1/tenants/{tid}/incidents/{iid}").json()
+        assert inc["status"] == "closed" and inc["is_false_positive"] is True
+    # Another organisation's user cannot touch these incidents.
+    b, btid = bob
+    r = b.post(f"/api/v1/tenants/{btid}/incidents/bulk-status",
+               json={"incident_ids": [str(ids[1])], "status": "investigating", "note": "x" * 12})
+    assert r.status_code == 200 and r.json()["updated"] == 0
+    assert s.get(f"/api/v1/tenants/{tid}/incidents/{ids[1]}").json()["status"] == "closed"

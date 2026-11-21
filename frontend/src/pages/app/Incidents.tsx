@@ -10,6 +10,7 @@ import {
   Code,
   Grid,
   Group,
+  Modal,
   MultiSelect,
   Progress,
   ScrollArea,
@@ -37,7 +38,7 @@ import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom"
 import { useCan, useTenantId } from "../../api/auth";
 import { api, errorMessage } from "../../api/client";
 import type { Incident, IncidentDetail, Page } from "../../api/types";
-import { fmtDateTime, fmtRelative, humanize, shortHash } from "../../components/format";
+import { fmtDateTime, fmtRelative, humanize, minCharsHint, shortHash } from "../../components/format";
 import { IncidentStatusBadge, SeverityBadge, VerificationBadge } from "../../components/status";
 import { DataTable, EmptyState, ErrorState, KeyValue, LoadingBlock, PageHeader, SearchInput, Section } from "../../components/ui";
 
@@ -55,6 +56,10 @@ export function IncidentsPage() {
   const [q, setQ] = useState("");
   const [page, setPage] = useState(1);
   const [sort, setSort] = useState("-last_observed_at");
+  const can = useCan();
+  const [selected, setSelected] = useState<string[]>([]);
+  const [bulkOpen, setBulkOpen] = useState(false);
+  const [bulkNote, setBulkNote] = useState("");
   const list = useQuery({
     queryKey: ["incidents", tid, openOnly, severity, category, mine, q, page, sort],
     queryFn: () =>
@@ -69,6 +74,19 @@ export function IncidentsPage() {
         sort,
       }),
   });
+  const bulk = useMutation({
+    mutationFn: () => api.post<{ updated: number; unchanged: number; skipped: { reference: string; reason: string }[] }>(`/tenants/${tid}/incidents/bulk-status`, {
+      incident_ids: selected, status: "closed", note: bulkNote.trim(), false_positive: true,
+    }),
+    onSuccess: (r) => {
+      notifications.show({ color: "secure", title: `${r.updated} incident(s) closed as false positive`,
+        message: [r.unchanged ? `${r.unchanged} already closed.` : "", r.skipped.length ? `Not changed: ${r.skipped.map((x) => `${x.reference} (${x.reason})`).join("; ")}` : "Recorded in each incident's history."].filter(Boolean).join(" ") });
+      setSelected([]); setBulkOpen(false); setBulkNote(""); list.refetch();
+    },
+    onError: (e) => notifications.show({ color: "threat", title: "Action failed", message: errorMessage(e) }),
+  });
+  const pageIds = (list.data?.items ?? []).map((i) => i.id);
+  const toggle = (id: string) => setSelected((cur) => (cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id]));
   return (
     <>
       <PageHeader
@@ -84,6 +102,16 @@ export function IncidentsPage() {
           <Switch label="Open only" checked={openOnly} onChange={(e) => setOpenOnly(e.currentTarget.checked)} />
           <Switch label="Assigned to me" checked={mine} onChange={(e) => setMine(e.currentTarget.checked)} />
         </Group>
+        {can("incidents:manage") && (
+          <Group mb="sm" gap="sm">
+            <Button size="xs" variant="subtle" onClick={() => setSelected(selected.length === pageIds.length ? [] : pageIds)} disabled={!pageIds.length}>
+              {selected.length === pageIds.length && pageIds.length ? "Clear selection" : "Select all on this page"}
+            </Button>
+            {selected.length > 0 && (
+              <Button size="xs" variant="light" color="gray" onClick={() => setBulkOpen(true)}>Close {selected.length} selected as false positive</Button>
+            )}
+          </Group>
+        )}
         <DataTable<Incident>
           rows={list.data?.items}
           loading={list.isLoading}
@@ -99,6 +127,9 @@ export function IncidentsPage() {
           onSort={setSort}
           empty={<EmptyState icon={IconCircleCheck} title={openOnly ? "No open incidents" : "No incidents"} description="When monitoring detects something that needs attention, it appears here." />}
           columns={[
+            ...(can("incidents:manage") ? [{ key: "select", header: "", width: 40, render: (i: Incident) => (
+              <Checkbox aria-label={`Select ${i.reference}`} checked={selected.includes(i.id)} onClick={(e) => e.stopPropagation()} onChange={() => toggle(i.id)} />
+            ) }] : []),
             { key: "severity", header: "Severity", sortable: true, render: (i) => <SeverityBadge severity={i.severity} />, width: 110 },
             {
               key: "reference",
@@ -123,6 +154,14 @@ export function IncidentsPage() {
           ]}
         />
       </Card>
+      <Modal opened={bulkOpen} onClose={() => setBulkOpen(false)} title={`Close ${selected.length} incident(s) as false positive`}>
+        <Stack>
+          <Text size="sm">Each incident is closed, marked as a false positive, and your note is recorded in its history.</Text>
+          <Textarea label="Reason" required autosize minRows={3} value={bulkNote} onChange={(e) => setBulkNote(e.currentTarget.value)}
+            description={minCharsHint(bulkNote, 10, "Why these are not real threats, e.g. which rule misfired.")} />
+          <Button onClick={() => bulk.mutate()} loading={bulk.isPending} disabled={bulkNote.trim().length < 10}>Close as false positive</Button>
+        </Stack>
+      </Modal>
     </>
   );
 }

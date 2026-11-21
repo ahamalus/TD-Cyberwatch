@@ -159,6 +159,35 @@ class NoteIn(BaseModel):
     body: str = Field(min_length=1, max_length=10000)
 
 
+class BulkStatusIn(BaseModel):
+    incident_ids: list[uuid.UUID] = Field(min_length=1, max_length=200)
+    status: str = Field(pattern="^(acknowledged|investigating|contained|resolved|closed)$")
+    note: str | None = Field(default=None, max_length=10000)
+    false_positive: bool | None = None
+
+
+@router.post("/incidents/bulk-status")
+def bulk_status(body: BulkStatusIn, ctx: TenantContext = Depends(require(P.INCIDENTS_MANAGE)),
+                db: Session = Depends(get_db)) -> dict:
+    """Change several incidents at once (e.g. close a batch of false positives with one note). Each change is
+    recorded in its own incident history; incidents whose status cannot change that way are reported back."""
+    rows = db.execute(select(Incident).where(Incident.tenant_id == ctx.tenant_id,
+                                             Incident.id.in_(body.incident_ids))).scalars().all()
+    updated, unchanged, skipped = 0, 0, []
+    for inc in rows:
+        if inc.status == body.status:
+            unchanged += 1
+            continue
+        try:
+            with db.begin_nested():
+                svc.change_status(db, inc, body.status, ctx.actor(), note=body.note, false_positive=body.false_positive)
+            updated += 1
+        except ValidationFailed as exc:
+            skipped.append({"reference": inc.reference, "reason": exc.message})
+    db.commit()
+    return {"updated": updated, "unchanged": unchanged, "skipped": skipped}
+
+
 @router.post("/incidents/{incident_id}/notes")
 def add_note(incident_id: uuid.UUID, body: NoteIn, ctx: TenantContext = Depends(require(P.INCIDENTS_MANAGE)),
              db: Session = Depends(get_db)) -> dict:
