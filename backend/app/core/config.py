@@ -85,6 +85,12 @@ class Settings(BaseSettings):
     # Concurrent file downloads for connectors with one request per file (cPanel UAPI).
     cpanel_parallel_reads: int = 4
 
+    # Compare WordPress core and wordpress.org plugin files with the official published checksums
+    # (outbound HTTPS to api.wordpress.org and downloads.wordpress.org; lists are cached per release).
+    vendor_checksums_enabled: bool = True
+    wordpress_api_base: str = "https://api.wordpress.org"
+    wordpress_downloads_base: str = "https://downloads.wordpress.org"
+
     # Notifications
     smtp_host: str | None = None
     smtp_port: int = 587

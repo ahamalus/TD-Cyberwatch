@@ -19,6 +19,8 @@ os.environ["CW_COOKIE_SECURE"] = "false"
 os.environ["CW_OUTBOUND_ALLOW_CIDRS"] = '["127.0.0.0/8"]'
 os.environ["CW_STORAGE_DIR"] = "/tmp/cw-test-storage"  # noqa: S108
 os.environ["CW_TRIAL_DAYS"] = "14"
+# No calls to wordpress.org from tests; tests of checksum verification enable it with a mocked transport.
+os.environ["CW_VENDOR_CHECKSUMS_ENABLED"] = "false"
 
 from alembic.config import Config  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402

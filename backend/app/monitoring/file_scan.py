@@ -30,10 +30,11 @@ from app.models import (
     MonitoringConfig,
     ScanJob,
     SnapshotError,
+    SoftwareInstall,
     Website,
 )
 from app.models.incidents import SEVERITY_RANK
-from app.monitoring import malware
+from app.monitoring import malware, vendor
 from app.monitoring.inventory import (
     DEFAULT_EXCLUSIONS,
     DIR_LISTED,
@@ -119,7 +120,7 @@ def load_previous(db: Session, website_id: uuid.UUID, exclude_snapshot: uuid.UUI
 def load_entries(db: Session, snapshot_id: uuid.UUID) -> dict[str, PrevEntry]:
     rows = db.execute(select(FileSnapshotEntry).where(FileSnapshotEntry.snapshot_id == snapshot_id)).scalars()
     return {
-        r.path: PrevEntry(r.entry_type, r.size, r.mtime, r.sha256, r.hash_status, r.symlink_target, r.mode)
+        r.path: PrevEntry(r.entry_type, r.size, r.mtime, r.sha256, r.hash_status, r.symlink_target, r.mode, r.md5)
         for r in rows
     }
 
@@ -135,6 +136,7 @@ def _persist_entries(db: Session, snapshot: FileSnapshot, result: InventoryResul
             "mtime": e.mtime,
             "mode": e.mode,
             "sha256": e.sha256,
+            "md5": e.md5,
             "hash_status": e.hash_status,
             "symlink_target": e.symlink_target,
         }
@@ -161,9 +163,11 @@ def _persist_entries(db: Session, snapshot: FileSnapshot, result: InventoryResul
 
 
 def _update_inventory(
-    db: Session, website: Website, snapshot: FileSnapshot, result: InventoryResult, deleted: list[str], unverified: list[str]
+    db: Session, website: Website, snapshot: FileSnapshot, result: InventoryResult, deleted: list[str], unverified: list[str],
+    vendor_report: vendor.VendorReport | None = None,
 ) -> None:
     now = snapshot.completed_at or utcnow()
+    vstatus = vendor_report.status if vendor_report else {}
     rows = [
         {
             "id": uuid.uuid4(),
@@ -179,6 +183,8 @@ def _update_inventory(
             "malware_status": e.inspection.status if e.inspection else None,
             "malware_signatures": e.inspection.signatures if e.inspection else [],
             "malware_scanned_at": e.inspection.scanned_at if e.inspection else None,
+            "vendor_status": vstatus.get(e.path, (None, None))[0],
+            "vendor_ref": vstatus.get(e.path, (None, None))[1],
             "state": "present",
             "first_seen_at": now,
             "last_seen_at": now,
@@ -201,6 +207,8 @@ def _update_inventory(
                 "malware_status": stmt.excluded.malware_status,
                 "malware_signatures": stmt.excluded.malware_signatures,
                 "malware_scanned_at": stmt.excluded.malware_scanned_at,
+                "vendor_status": stmt.excluded.vendor_status,
+                "vendor_ref": stmt.excluded.vendor_ref,
                 "state": "present",
                 "last_seen_at": stmt.excluded.last_seen_at,
                 "last_snapshot_id": stmt.excluded.last_snapshot_id,
@@ -242,12 +250,14 @@ def _change_row(c: Change, snapshot: FileSnapshot, prev_id: uuid.UUID | None) ->
 
 def _raise_incidents(
     db: Session, website: Website, cfg: MonitoringConfig | None, snapshot: FileSnapshot, changes: list[Change],
-    withheld_reason: str | None, tenant_is_demo: bool,
+    withheld_reason: str | None, tenant_is_demo: bool, verified: set[str] | None = None,
 ) -> list[uuid.UUID]:
     opened: list[uuid.UUID] = []
     threshold = cfg.incident_min_severity if cfg else "medium"
     aggregate: list[Change] = []
     for c in changes:
+        if c.change_type != "deleted" and verified and c.path in verified:
+            continue  # new content is the publisher's official file (e.g. a WordPress or plugin update)
         heuristic = [f for f in c.flags if f in HEURISTIC_FLAGS]
         if heuristic and c.change_type != "deleted":
             rule = heuristic[0]
@@ -350,15 +360,21 @@ def _raise_incidents(
 
 
 def _raise_malware_incidents(db: Session, website: Website, snapshot: FileSnapshot, result: InventoryResult,
-                             tenant_is_demo: bool) -> list[uuid.UUID]:
-    """One incident per file with a fresh detection. Cached verdicts (unchanged content) do not re-alert."""
+                             tenant_is_demo: bool, vendor_report: vendor.VendorReport | None = None) -> list[uuid.UUID]:
+    """One incident per file with a fresh detection. Cached verdicts (unchanged content) do not re-alert.
+
+    Files identical to the publisher's official release are not reported for heuristic (YARA) matches; an
+    antivirus signature hit on such a file is still reported, but as a probable signature false positive."""
     opened: list[uuid.UUID] = []
     for e in result.entries.values():
         v = e.inspection
         if v is None or not v.fresh or v.status not in (malware.INFECTED, malware.SUSPICIOUS):
             continue
-        confirmed = v.status == malware.INFECTED
-        sigs = [s for s in v.signatures if s.startswith("clamav:")] if confirmed else v.signatures
+        genuine = vendor_report.status[e.path][1] if vendor_report and vendor_report.is_verified(e.path) else None
+        if genuine and v.status == malware.SUSPICIOUS:
+            continue
+        confirmed = v.status == malware.INFECTED and not genuine
+        sigs = [s for s in v.signatures if s.startswith("clamav:")] if v.status == malware.INFECTED else v.signatures
         names = ", ".join(s.partition(":")[2] for s in sigs)
         spec = DetectionSpec(
             tenant_id=website.tenant_id,
@@ -366,12 +382,15 @@ def _raise_malware_incidents(db: Session, website: Website, snapshot: FileSnapsh
             hosting_account_id=website.hosting_account_id,
             title=(f"Malware detected ({names}): {e.path}" if confirmed
                    else f"Malicious code pattern ({names}): {e.path}")[:300],
-            summary=(" ".join(malware.describe_signature(s) for s in sigs) + f" Path: {e.path}.")[:2000],
+            summary=(" ".join(malware.describe_signature(s) for s in sigs) + f" Path: {e.path}."
+                     + (f" Note: this file is byte-for-byte identical to the official {genuine} release, so the "
+                        "antivirus signature is probably a false positive; confirm before acting." if genuine else "")
+                     )[:2000],
             category="malware",
             finding_class="confirmed_malware" if confirmed else "heuristic_suspicion",
-            severity="critical" if confirmed else "high",
+            severity="critical" if confirmed else ("medium" if genuine else "high"),
             confidence="high" if confirmed else "medium",
-            detection_source="clamav" if confirmed else "yara",
+            detection_source="clamav" if v.status == malware.INFECTED else "yara",
             rule_key=sigs[0][:120],
             dedupe_key=f"malware:{website.id}:{e.path}",
             recommended_action=(
@@ -387,11 +406,12 @@ def _raise_malware_incidents(db: Session, website: Website, snapshot: FileSnapsh
             evidence=[EvidenceSpec(
                 kind="scan_result",
                 source="malware_scan",
-                collection_method="clamd_instream" if confirmed else "yara_rules",
+                collection_method="clamd_instream" if v.status == malware.INFECTED else "yara_rules",
                 content={"path": e.path, "sha256": e.sha256, "size": e.size, "verdict": v.status,
                          "signatures": v.signatures, "matched_text": v.matched_text, "engine": v.engine,
                          "signature_db_version": v.db_version,
-                         "scanned_at": v.scanned_at, "snapshot_id": str(snapshot.id)},
+                         "scanned_at": v.scanned_at, "snapshot_id": str(snapshot.id),
+                         "official_release_match": genuine},
                 reference_id=snapshot.id,
             )],
             requires_human_verification=not confirmed,
@@ -402,6 +422,129 @@ def _raise_malware_incidents(db: Session, website: Website, snapshot: FileSnapsh
         if inc and created:
             opened.append(inc.id)
     return opened
+
+
+VENDOR_INCIDENT_CAP = 50
+
+
+def _raise_vendor_incidents(db: Session, website: Website, snapshot: FileSnapshot, report: vendor.VendorReport,
+                            previous: dict[str, tuple[str | None, str | None]], entries: dict,
+                            tenant_is_demo: bool) -> list[uuid.UUID]:
+    """Tampering found by comparison with official checksums.
+
+    Raised when a finding is new or the file's content changed since the last scan, so a finding that was
+    reviewed and closed is not re-opened by every scan."""
+    opened: list[uuid.UUID] = []
+
+    def fresh(path: str, status: str) -> bool:
+        prev_status, prev_sha = previous.get(path, (None, None))
+        return prev_status != status or prev_sha != entries[path].sha256
+
+    def raise_(spec: DetectionSpec) -> None:
+        inc, created = incident_svc.raise_detection(db, spec)
+        if inc and created:
+            opened.append(inc.id)
+
+    def evidence(paths: list[str], install: vendor.InstallReport) -> EvidenceSpec:
+        return EvidenceSpec(
+            kind="scan_result", source="vendor_checksums", collection_method="official_checksum_comparison",
+            reference_id=snapshot.id,
+            content={"snapshot_id": str(snapshot.id), "release": install.ref, "install_root": install.detected.root or "/",
+                     "files": [{"path": p, "sha256": entries[p].sha256, "md5": entries[p].md5,
+                                "comparison": report.status[p][0]} for p in paths[:500]]},
+        )
+
+    per_file = 0
+    for inst in report.installs:
+        d = inst.detected
+        if d.product == vendor.CORE:
+            findings = [(p, vendor.MODIFIED) for p in inst.modified] + [(p, vendor.UNEXPECTED) for p in inst.unexpected]
+            overflow: list[str] = []
+            for path, status in findings:
+                if not fresh(path, status):
+                    continue
+                if per_file >= VENDOR_INCIDENT_CAP:
+                    overflow.append(path)
+                    continue
+                per_file += 1
+                is_code = path.lower().endswith((".php", ".phtml", ".phar", ".js", ".htaccess"))
+                modified = status == vendor.MODIFIED
+                raise_(DetectionSpec(
+                    tenant_id=website.tenant_id, website_id=website.id, hosting_account_id=website.hosting_account_id,
+                    title=(f"Modified WordPress core file: {path}" if modified
+                           else f"Unexpected file in WordPress core directory: {path}")[:300],
+                    summary=(
+                        f"{path} differs from the official WordPress {d.version} release. Core files should never "
+                        "be edited; attackers modify them to hide backdoors that survive plugin and theme clean-ups."
+                        if modified else
+                        f"{path} is not part of WordPress {d.version}. Nothing but core files belongs in wp-admin/ "
+                        "and wp-includes/; files planted there are a common way to hide web shells."),
+                    category="file_integrity", finding_class="integrity_anomaly",
+                    severity="high" if (modified or is_code) else "medium", confidence="high",
+                    detection_source="vendor_checksum",
+                    rule_key="wordpress_core_modified" if modified else "wordpress_core_unexpected_file",
+                    dedupe_key=f"vendor:{website.id}:{path}",
+                    recommended_action=(
+                        "Compare the file with the official copy from wordpress.org from a safe environment. If the "
+                        "change was not made deliberately, reinstall the same WordPress version (Dashboard > Updates "
+                        "> Re-install) and investigate how the file was changed. Mark as a false positive only if "
+                        "the edit is intentional."),
+                    affected_resources=[{"type": "file", "path": path, "sha256": entries[path].sha256}],
+                    evidence=[evidence([path], inst)],
+                    path_for_suppression=path, is_demo=tenant_is_demo,
+                ))
+            if overflow:
+                raise_(DetectionSpec(
+                    tenant_id=website.tenant_id, website_id=website.id, hosting_account_id=website.hosting_account_id,
+                    title=f"{len(overflow)} more WordPress core files differ from the official release",
+                    summary=(f"In addition to the files reported individually, {len(overflow)} file(s) in the "
+                             f"WordPress {d.version} install at /{d.root} are modified or should not be there."),
+                    category="file_integrity", finding_class="integrity_anomaly", severity="high", confidence="high",
+                    detection_source="vendor_checksum", rule_key="wordpress_core_modified",
+                    dedupe_key=f"vendor_core_bulk:{website.id}:{d.root}",
+                    recommended_action="Reinstall the same WordPress version and review how the files were changed.",
+                    affected_resources=[{"type": "file", "path": p} for p in overflow[:200]],
+                    evidence=[evidence(overflow, inst)], is_demo=tenant_is_demo,
+                ))
+        else:
+            paths = inst.modified + inst.unexpected
+            if not paths or not any(fresh(p, report.status[p][0]) for p in paths):
+                continue
+            raise_(DetectionSpec(
+                tenant_id=website.tenant_id, website_id=website.id, hosting_account_id=website.hosting_account_id,
+                title=f"Plugin files differ from the official release: {d.name or d.slug} {d.version}"[:300],
+                summary=(f"{len(inst.modified)} file(s) of the {d.name or d.slug} plugin ({d.version}) differ from "
+                         f"the copy published on wordpress.org and {len(inst.unexpected)} PHP file(s) are not part "
+                         "of it. This can be a deliberate customisation, a failed update, or injected code."),
+                category="file_integrity", finding_class="integrity_anomaly", severity="medium", confidence="medium",
+                detection_source="vendor_checksum", rule_key="wordpress_plugin_modified",
+                dedupe_key=f"vendor_plugin:{website.id}:{d.root}{d.slug}",
+                recommended_action=(
+                    "If nobody edited this plugin on purpose, reinstall it from wordpress.org (same version) and "
+                    "review the listed files from a safe environment."),
+                affected_resources=[{"type": "file", "path": p, "change": report.status[p][0]} for p in paths[:200]],
+                evidence=[evidence(paths, inst)], is_demo=tenant_is_demo,
+            ))
+    return opened
+
+
+def _persist_installs(db: Session, website: Website, report: vendor.VendorReport, complete: bool) -> None:
+    now = utcnow()
+    seen: set[tuple[str, str, str]] = set()
+    for r in report.installs:
+        d = r.detected
+        seen.add((d.product, d.root, d.slug))
+        values = {"version": d.version, "locale": d.locale, "name": d.name, "checksum_status": r.checksum_status,
+                  "files_verified": r.verified, "files_modified": len(r.modified),
+                  "files_unexpected": len(r.unexpected), "last_seen_at": now}
+        stmt = pg_insert(SoftwareInstall).values(
+            id=uuid.uuid4(), tenant_id=website.tenant_id, website_id=website.id, product=d.product, slug=d.slug,
+            root=d.root, first_seen_at=now, **values)
+        db.execute(stmt.on_conflict_do_update(constraint="uq_software_install", set_=values))
+    if complete:  # only a complete scan proves an install is gone
+        for row in db.execute(select(SoftwareInstall).where(SoftwareInstall.website_id == website.id)).scalars():
+            if (row.product, row.root, row.slug) not in seen:
+                db.delete(row)
 
 
 def _change_summary(c: Change) -> dict[str, Any]:
@@ -516,12 +659,14 @@ def run_file_scan(
 
     # Malware inspection reuses the bytes downloaded for hashing (no second download).
     inspector = malware.ContentInspector(db, website.id) if hash_files else None
+    # Version files (wp-includes/version.php, plugin headers) are read during the walk for checksum lookup.
+    observer = vendor.WordPressObserver() if hash_files else None
     try:
         connector = build_connector(account, credential, definition)
         with connector.open_file_source(root) as source:
             result = walk_inventory(source, exclusions, scan_limits(cfg), progress=progress, hash_files=hash_files,
                                     inspector=inspector, previous=prev_entries if reuse_unchanged else None,
-                                    parallel=getattr(source, "parallel_reads", 1))
+                                    parallel=getattr(source, "parallel_reads", 1), observer=observer)
     except ConnectorError as exc:
         snapshot.status = "failed"
         snapshot.failure_reason = exc.message
@@ -564,7 +709,20 @@ def run_file_scan(
             db.execute(insert(FileChange), rows[i : i + 2000])
     deleted = [c.path for c in changes if c.change_type == "deleted"]
     unverified = diff.unverified_missing if diff else []
-    _update_inventory(db, website, snapshot, result, deleted, unverified)
+
+    vendor_report = None
+    previous_vendor: dict[str, tuple[str | None, str | None]] = {}
+    if observer is not None and observer.found:
+        store = vendor.ChecksumStore(db) if get_settings().vendor_checksums_enabled else None
+        vendor_report = vendor.verify(result.entries, list(observer.found.values()), store)
+        previous_vendor = {
+            r.path: (r.vendor_status, r.sha256) for r in db.execute(
+                select(FileInventoryItem.path, FileInventoryItem.vendor_status, FileInventoryItem.sha256)
+                .where(FileInventoryItem.website_id == website.id, FileInventoryItem.vendor_status.is_not(None))
+            ).all()
+        }
+        _persist_installs(db, website, vendor_report, complete=result.status == "completed")
+    _update_inventory(db, website, snapshot, result, deleted, unverified, vendor_report)
 
     snapshot.compared_to_snapshot_id = prev.id if prev else None
     snapshot.changes_added = sum(1 for c in changes if c.change_type == "added")
@@ -586,11 +744,14 @@ def run_file_scan(
     from app.models import Tenant
 
     tenant = db.get(Tenant, website.tenant_id)
-    opened = _raise_incidents(db, website, cfg, snapshot, changes, diff.withheld_reason if diff else None,
-                              bool(tenant and tenant.is_demo))
+    demo = bool(tenant and tenant.is_demo)
+    verified = {p for p, (st, _) in vendor_report.status.items() if st == vendor.VERIFIED} if vendor_report else set()
+    opened = _raise_incidents(db, website, cfg, snapshot, changes, diff.withheld_reason if diff else None, demo, verified)
     if inspector is not None:
         inspector.flush()
-        opened += _raise_malware_incidents(db, website, snapshot, result, bool(tenant and tenant.is_demo))
+        opened += _raise_malware_incidents(db, website, snapshot, result, demo, vendor_report)
+    if vendor_report is not None:
+        opened += _raise_vendor_incidents(db, website, snapshot, vendor_report, previous_vendor, result.entries, demo)
 
     website.last_scan_at = snapshot.completed_at
     website.last_scan_status = snapshot.status
@@ -616,5 +777,6 @@ def run_file_scan(
             "incidents_opened": [str(i) for i in opened],
             "dirs_listed": sum(1 for e in result.entries.values() if e.entry_type == "dir" and e.hash_status == DIR_LISTED),
             "malware": inspector.summary() if inspector else {"unavailable_reason": "File hashing is not available."},
+            "vendor": vendor_report.summary() if vendor_report else None,
         },
     )

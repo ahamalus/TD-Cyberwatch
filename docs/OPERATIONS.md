@@ -24,6 +24,26 @@
   - **PHP `error_log` files** are excluded by default.
   - **Progress** is shown on running scans.
 
+- **Official checksum verification (WordPress)**:
+  - **What it checks:** scans read `wp-includes/version.php` and plugin headers, then compare files with the
+    checksums wordpress.org publishes for that exact release. Core lists come from `api.wordpress.org`
+    (MD5) and plugin lists from `downloads.wordpress.org` (MD5 and SHA-256).
+  - **Results:** each file is **Genuine**, **Modified** or **Not in release**; see the "Official release"
+    column of the file inventory and the website's **Software** tab.
+  - **Genuine files:** YARA matches are recorded on the file but not raised as incidents. A ClamAV hit on a
+    genuine file is still raised, at medium severity, marked as a probable signature false positive.
+  - **Incidents raised:** a modified core file (high); any file inside `wp-admin/` or `wp-includes/` that is
+    not part of the release (high for code, medium otherwise); and plugin files that differ from wordpress.org
+    (one medium incident per plugin). Changes to bundled `wp-content/` themes and plugins are never reported
+    as core tampering.
+  - **Updates:** a change whose new content matches the official release (a WordPress or plugin update) is
+    not reported as a suspicious change.
+  - **Caching:** checksum lists are cached per release in `vendor_checksums`. "Not found" answers are
+    retried after 3 days and errors after 6 hours.
+  - **When wordpress.org is unreachable:** files are simply not verified. They are never assumed genuine, and
+    heuristics apply as normal.
+  - **To turn it off:** set `CW_VENDOR_CHECKSUMS_ENABLED=false`. Versions are still detected.
+
 ## Common problems
 
 | Symptom | Likely cause | Action |

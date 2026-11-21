@@ -140,6 +140,8 @@ class FileSnapshotEntry(Base):
     mtime: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     mode: Mapped[int | None] = mapped_column(Integer)
     sha256: Mapped[str | None] = mapped_column(String(64))
+    # MD5 only for comparison with vendor checksum lists (WordPress core publishes MD5); never for integrity.
+    md5: Mapped[str | None] = mapped_column(String(32))
     # hashed | skipped_size | skipped_budget | error | not_applicable | metadata_only
     hash_status: Mapped[str] = mapped_column(String(16), nullable=False)
     symlink_target: Mapped[str | None] = mapped_column(String(2048))
@@ -188,6 +190,10 @@ class FileInventoryItem(UUIDPk, Base):
         ARRAY(String(200)), default=list, server_default=text("'{}'"), nullable=False
     )
     malware_scanned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Comparison with the publisher's official checksums: verified | modified | unexpected | NULL (not vendor
+    # software, or no checksum list available). vendor_ref names the package, e.g. "wordpress 6.7.1".
+    vendor_status: Mapped[str | None] = mapped_column(String(16))
+    vendor_ref: Mapped[str | None] = mapped_column(String(200))
 
     __table_args__ = (
         UniqueConstraint("website_id", "path", name="uq_inventory_website_path"),
@@ -335,3 +341,55 @@ class MalwareVerdict(UUIDPk, Base):
         Index("ix_malware_verdicts_scanned_at", "scanned_at"),
     )
 
+
+
+class VendorChecksums(UUIDPk, Base):
+    """Official per-file checksums of a published software release (e.g. WordPress core 6.7.1 or a plugin
+    version from wordpress.org). Public data, shared by all tenants, so not tenant-scoped."""
+
+    __tablename__ = "vendor_checksums"
+
+    product: Mapped[str] = mapped_column(String(32), nullable=False)  # wordpress-core | wordpress-plugin
+    slug: Mapped[str] = mapped_column(String(200), nullable=False)
+    version: Mapped[str] = mapped_column(String(64), nullable=False)
+    locale: Mapped[str] = mapped_column(String(16), nullable=False, default="")
+    # ok | not_found (publisher has no list for this release) | error (fetch failed; retried later)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    # {relative path: {"md5": [...], "sha256": [...]}}
+    files: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+    detail: Mapped[str | None] = mapped_column(String(500))
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+    __table_args__ = (UniqueConstraint("product", "slug", "version", "locale", name="uq_vendor_checksums_release"),)
+
+
+class SoftwareInstall(UUIDPk, Base):
+    """Software detected on a website during a file scan (WordPress core and plugins)."""
+
+    __tablename__ = "software_installs"
+
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
+    website_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("websites.id", ondelete="CASCADE"), nullable=False
+    )
+    product: Mapped[str] = mapped_column(String(32), nullable=False)
+    slug: Mapped[str] = mapped_column(String(200), nullable=False)
+    # Directory of the install relative to the monitored root ("" for the root itself, "blog/" etc.).
+    root: Mapped[str] = mapped_column(String(1024), nullable=False)
+    version: Mapped[str | None] = mapped_column(String(64))
+    locale: Mapped[str | None] = mapped_column(String(16))
+    name: Mapped[str | None] = mapped_column(String(200))
+    # verified | modified | no_checksums | unavailable
+    checksum_status: Mapped[str | None] = mapped_column(String(16))
+    files_verified: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    files_modified: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    files_unexpected: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("website_id", "product", "root", "slug", name="uq_software_install"),
+        Index("ix_software_installs_tenant", "tenant_id"),
+    )

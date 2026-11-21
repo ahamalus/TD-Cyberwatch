@@ -10,6 +10,8 @@ import {
   IconCircleCheck,
   IconCircleDashed,
   IconCircleX,
+  IconFileAlert,
+  IconFilePlus,
   IconClock,
   IconHelpCircle,
   IconInfoCircle,
@@ -17,6 +19,7 @@ import {
   IconPlayerPause,
   IconPlugConnected,
   IconPlugConnectedX,
+  IconRosetteDiscountCheck,
   IconShieldCheck,
   IconShieldQuestion,
   type Icon,
@@ -182,6 +185,21 @@ export function Dot({ tone, label }: { tone: Tone; label: string }) {
   );
 }
 
+const VENDOR: Record<string, Spec> = {
+  verified: { tone: "secure", icon: IconRosetteDiscountCheck, label: "Genuine" },
+  modified: { tone: "threat", icon: IconFileAlert, label: "Modified" },
+  unexpected: { tone: "amber", icon: IconFilePlus, label: "Not in release" },
+};
+
+/** Comparison of one file with the publisher's official checksums (WordPress core, wordpress.org plugins). */
+export function VendorBadge({ status, release }: { status?: string | null; release?: string | null }) {
+  if (!status) return <Text size="xs" c="dimmed">—</Text>;
+  const tip = status === "verified" ? `Identical to the official ${release} release.`
+    : status === "modified" ? `Differs from the official ${release} release.`
+    : `Not part of the official ${release} release.`;
+  return <StatusBadge spec={VENDOR[status] ?? { tone: "gray", icon: IconShieldQuestion }} value={status} tooltip={tip} />;
+}
+
 const MALWARE: Record<string, Spec> = {
   infected: { tone: "threat", icon: IconAlertOctagon, label: "Malware" },
   suspicious: { tone: "amber", icon: IconAlertTriangle, label: "Suspicious code" },
@@ -192,11 +210,20 @@ const MALWARE: Record<string, Spec> = {
 };
 
 /** Malware verdict for one file. "Clean" is only ever shown when ClamAV actually scanned the content. */
-export function MalwareBadge({ status, signatures }: { status?: string | null; signatures?: string[] }) {
+export function MalwareBadge({ status, signatures, genuine }: { status?: string | null; signatures?: string[]; genuine?: string | null }) {
   if (!status) return <Text size="xs" c="dimmed">—</Text>;
   const tip = signatures && signatures.length > 0
     ? signatures.map((s) => s.replace(/^clamav:/, "ClamAV: ").replace(/^yara:/, "YARA rule: ")).join(", ")
     : status === "unavailable" ? "The malware scanner was not available during this scan." : undefined;
+  if (status === "suspicious" && genuine) {
+    return (
+      <StatusBadge
+        spec={{ tone: "gray", icon: IconShieldCheck, label: "Pattern in genuine file" }}
+        value={status}
+        tooltip={`${tip ?? "A heuristic rule matched"}, but the file is identical to the official ${genuine} release, so it is not reported.`}
+      />
+    );
+  }
   return <StatusBadge spec={MALWARE[status] ?? MALWARE.unavailable} value={status} tooltip={tip} />;
 }
 

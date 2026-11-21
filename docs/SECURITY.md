@@ -36,10 +36,10 @@
 | Repudiation | Staff deny actions in customer tenant | All actions audited with actor, IP, grant ID | — |
 | Information disclosure | IDOR across tenants | Tenant-scoped queries, 404s, RLS, tests | — |
 | Information disclosure | Secret leakage via logs/API | Redaction, no read-back endpoints, tests | Third-party library logging at DEBUG; keep INFO in production |
-| Information disclosure | SSRF to cloud metadata / internal services | Netguard + pinning + port lists; API host has no egress to customers | Workers can reach the public internet by design |
+| Information disclosure | SSRF to cloud metadata / internal services | Netguard + pinning + port lists; API host has no egress to customers | Workers can reach the public internet by design (including api.wordpress.org / downloads.wordpress.org for official checksums, fetched through the same pinned client) |
 | Denial of service | Huge sites or slow hosts exhaust workers | File/byte/file-count/time/depth limits, per-tenant concurrency, task time limits | Large estates need worker sizing (see DEPLOYMENT.md) |
 | Elevation of privilege | Admin makes self owner; viewer escalates | Owner-only owner changes, self-role change blocked, mass assignment ignored, tests | — |
-| Elevation of privilege | Compromised customer file triggers code execution in CyberWatch | Files only hashed (streamed), never executed or parsed | Future ClamAV/YARA integration must run sandboxed |
+| Elevation of privilege | Compromised customer file triggers code execution in CyberWatch | Files are hashed and pattern-matched (ClamAV in its own container, YARA in-process on bytes), never executed; version files are parsed with bounded regular expressions only | YARA runs inside the worker process |
 
 ## Security hardening checklist (production)
 

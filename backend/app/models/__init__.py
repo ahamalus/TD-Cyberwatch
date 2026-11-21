@@ -36,7 +36,9 @@ from app.models.scans import (
     ScanJob,
     SchedulerState,
     SnapshotError,
+    SoftwareInstall,
     TlsCheck,
+    VendorChecksums,
     WorkerHeartbeat,
 )
 from app.models.websites import MonitoringConfig, Website, WebsiteGroup
@@ -55,6 +57,7 @@ RLS_TABLES = [
     "file_snapshot_entries",
     "snapshot_errors",
     "file_inventory_items",
+    "software_installs",
     "file_changes",
     "availability_checks",
     "tls_checks",
@@ -85,6 +88,8 @@ __all__ = [
     "FileSnapshot",
     "FileSnapshotEntry",
     "MalwareVerdict",
+    "SoftwareInstall",
+    "VendorChecksums",
     "HostingAccount",
     "HostingCredential",
     "Incident",

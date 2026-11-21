@@ -69,6 +69,7 @@ class EntryRecord:
     sha256: str | None = None
     hash_status: str = "not_applicable"
     symlink_target: str | None = None
+    md5: str | None = None  # for comparison with vendor checksums (WordPress publishes MD5)
     # Content inspection result (e.g. a malware Verdict) when an inspector was used.
     inspection: Any = None
 
@@ -119,21 +120,23 @@ def matches_any(path: str, patterns: list[str], is_dir: bool = False) -> bool:
     return False
 
 
-def hash_stream(chunks, keep_up_to: int = 0) -> tuple[str, int, bytes | None]:
-    """SHA-256 of the stream. With ``keep_up_to`` > 0 the content is also returned when it is no larger
-    than that many bytes (for content inspection without a second download), otherwise None."""
+def hash_stream(chunks, keep_up_to: int = 0) -> tuple[str, int, bytes | None, str]:
+    """SHA-256 (and MD5, for vendor checksums) of the stream. With ``keep_up_to`` > 0 the content is also
+    returned when it is no larger than that many bytes (for inspection without a second download)."""
     h = hashlib.sha256()
+    m = hashlib.md5(usedforsecurity=False)
     n = 0
     kept: list[bytes] | None = [] if keep_up_to > 0 else None
     for chunk in chunks:
         h.update(chunk)
+        m.update(chunk)
         n += len(chunk)
         if kept is not None:
             if n > keep_up_to:
                 kept = None
             else:
                 kept.append(chunk)
-    return h.hexdigest(), n, (b"".join(kept) if kept is not None else None)
+    return h.hexdigest(), n, (b"".join(kept) if kept is not None else None), m.hexdigest()
 
 
 class ContentInspector(Protocol):
@@ -146,10 +149,18 @@ class ContentInspector(Protocol):
     def cached_verdict(self, sha256: str) -> Any | None: ...
 
 
+class ContentObserver(Protocol):
+    """Sees the content of selected files during the walk (e.g. software version detection). Thread-safe."""
+
+    def wants(self, path: str) -> bool: ...
+
+    def observe(self, path: str, data: bytes) -> None: ...
+
+
 def _unchanged(prev: PrevEntry | None, size: int | None, mtime: datetime | None) -> bool:
     """Same size and modification time as a file whose content was hashed in the previous scan."""
     return bool(
-        prev is not None and prev.entry_type == "file" and prev.hash_status == "hashed" and prev.sha256
+        prev is not None and prev.entry_type == "file" and prev.hash_status == "hashed" and prev.sha256 and prev.md5
         and size is not None and prev.size == size and mtime is not None and prev.mtime == mtime
     )
 
@@ -163,6 +174,7 @@ def walk_inventory(
     inspector: ContentInspector | None = None,
     previous: dict[str, PrevEntry] | None = None,
     parallel: int = 1,
+    observer: ContentObserver | None = None,
 ) -> InventoryResult:
     """Walk the tree breadth-first, hashing file contents.
 
@@ -172,24 +184,35 @@ def walk_inventory(
     """
     pool = ThreadPoolExecutor(max_workers=parallel, thread_name_prefix="scan-read") if parallel > 1 else None
     try:
-        return _walk(source, exclusions, limits, progress, hash_files, inspector, previous or {}, pool)
+        return _walk(source, exclusions, limits, progress, hash_files, inspector, previous or {}, pool, observer)
     finally:
         if pool is not None:
             pool.shutdown(wait=True)
 
 
-def _fetch(source: FileSource, inspector: ContentInspector | None, rel: str, size: int | None):
+OBSERVE_MAX_BYTES = 1024 * 1024
+
+
+def _fetch(source: FileSource, inspector: ContentInspector | None, rel: str, size: int | None,
+           observer: ContentObserver | None = None):
     """Download, hash and (optionally) inspect one file. Runs in a worker thread when parallel."""
     try:
         keep = inspector.max_bytes if inspector and (size is None or size <= inspector.max_bytes) else 0
-        digest, n, data = hash_stream(source.read_chunks(rel), keep_up_to=keep)
+        watched = observer is not None and observer.wants(rel)
+        if watched:
+            keep = max(keep, OBSERVE_MAX_BYTES)
+        digest, n, data, md5 = hash_stream(source.read_chunks(rel), keep_up_to=keep)
+        if watched and data is not None:
+            observer.observe(rel, data)
+        if inspector is not None and data is not None and len(data) > inspector.max_bytes:
+            data = None  # kept only for the observer; still too large to scan
         verdict = inspector.inspect(rel, digest, data) if inspector is not None else None
-        return digest, n, verdict, None
+        return digest, n, verdict, None, md5
     except ConnectorError as exc:
-        return None, 0, None, exc
+        return None, 0, None, exc, None
 
 
-def _walk(source, exclusions, limits, progress, hash_files, inspector, previous, pool) -> InventoryResult:
+def _walk(source, exclusions, limits, progress, hash_files, inspector, previous, pool, observer) -> InventoryResult:
     result = InventoryResult(status="completed")
     started = time.monotonic()
     budget = limits.max_total_bytes
@@ -266,8 +289,10 @@ def _walk(source, exclusions, limits, progress, hash_files, inspector, previous,
                     prev = previous.get(rel)
                     unchanged = _unchanged(prev, child.size, child.mtime)
                     cached = inspector.cached_verdict(prev.sha256) if (unchanged and inspector) else None
-                    if unchanged and (inspector is None or cached is not None):
-                        rec.sha256 = prev.sha256
+                    # Files the observer needs (e.g. version files) are always read: they are few and small.
+                    if (unchanged and (inspector is None or cached is not None)
+                            and not (observer is not None and observer.wants(rel))):
+                        rec.sha256, rec.md5 = prev.sha256, prev.md5
                         rec.hash_status = "hashed"
                         rec.inspection = cached
                         result.files_reused += 1
@@ -282,16 +307,16 @@ def _walk(source, exclusions, limits, progress, hash_files, inspector, previous,
 
         # Download this directory's files (concurrently when a pool is given).
         if to_fetch:
-            jobs = [(source, inspector, r.path, r.size) for r in to_fetch]
+            jobs = [(source, inspector, r.path, r.size, observer) for r in to_fetch]
             outcomes = pool.map(lambda a: _fetch(*a), jobs) if pool is not None else (_fetch(*a) for a in jobs)
-            for rec, (digest, n, verdict, exc) in zip(to_fetch, outcomes, strict=True):
+            for rec, (digest, n, verdict, exc, md5) in zip(to_fetch, outcomes, strict=True):
                 budget += rec.size or 0
                 if exc is not None:
                     rec.hash_status = "error"
                     result.files_not_hashed += 1
                     result.errors.append(ScanErrorRecord(rec.path, exc.code, exc.message, False))
                     continue
-                rec.sha256, rec.hash_status, rec.inspection = digest, "hashed", verdict
+                rec.sha256, rec.md5, rec.hash_status, rec.inspection = digest, md5, "hashed", verdict
                 rec.size = n if rec.size is None else rec.size
                 budget -= n
                 result.bytes_hashed += n
@@ -318,6 +343,7 @@ class PrevEntry:
     hash_status: str
     symlink_target: str | None = None
     mode: int | None = None
+    md5: str | None = None
 
 
 @dataclass

@@ -8,7 +8,7 @@ import { useCan, useTenantId } from "../../api/auth";
 import { api, downloadUrl, errorMessage } from "../../api/client";
 import type { FileChange, Job, Page, Website } from "../../api/types";
 import { fmtBytes, fmtDateTime, fmtRelative, humanize, scanJobDetail, shortHash } from "../../components/format";
-import { HealthBadge, MalwareBadge, ScanBadge, SeverityBadge } from "../../components/status";
+import { HealthBadge, MalwareBadge, ScanBadge, SeverityBadge, VendorBadge } from "../../components/status";
 import { DataTable, EmptyState, PageHeader, SearchInput } from "../../components/ui";
 
 function useSiteOptions() {
@@ -34,6 +34,22 @@ interface InventoryItem {
   malware_status: string | null;
   malware_signatures: string[];
   malware_scanned_at: string | null;
+  vendor_status: string | null;
+  vendor_ref: string | null;
+}
+
+interface SoftwareInstall {
+  product: string;
+  slug: string;
+  name: string | null;
+  root: string;
+  version: string | null;
+  locale: string | null;
+  checksum_status: string | null;
+  files_verified: number;
+  files_modified: number;
+  files_unexpected: number;
+  last_seen_at: string;
 }
 
 export function FilesPage() {
@@ -67,12 +83,14 @@ export function FilesPage() {
             </Tooltip>
           </Tabs.Tab>
           <Tabs.Tab value="compare" disabled={!website}>Compare with baseline</Tabs.Tab>
+          <Tabs.Tab value="software" disabled={!website}>Software</Tabs.Tab>
         </Tabs.List>
         <Tabs.Panel value="changes">
           <ChangesTable websiteId={website} />
         </Tabs.Panel>
         <Tabs.Panel value="inventory">{website && <InventoryTable websiteId={website} />}</Tabs.Panel>
         <Tabs.Panel value="compare">{website && <ComparePanel websiteId={website} />}</Tabs.Panel>
+        <Tabs.Panel value="software">{website && <SoftwarePanel websiteId={website} />}</Tabs.Panel>
       </Tabs>
     </>
   );
@@ -146,11 +164,12 @@ function InventoryTable({ websiteId }: { websiteId: string }) {
   const [q, setQ] = useState("");
   const [state, setState] = useState<string | null>(null);
   const [malware, setMalware] = useState<string | null>(null);
+  const [vendor, setVendor] = useState<string | null>(null);
   const [page, setPage] = useState(1);
   const [sort, setSort] = useState("path");
   const list = useQuery({
-    queryKey: ["inventory", tid, websiteId, q, state, malware, page, sort],
-    queryFn: () => api.get<Page<InventoryItem>>(`/tenants/${tid}/websites/${websiteId}/inventory`, { q, state: state ?? undefined, malware: malware ?? undefined, page, page_size: 50, sort }),
+    queryKey: ["inventory", tid, websiteId, q, state, malware, vendor, page, sort],
+    queryFn: () => api.get<Page<InventoryItem>>(`/tenants/${tid}/websites/${websiteId}/inventory`, { q, state: state ?? undefined, malware: malware ?? undefined, vendor: vendor ?? undefined, page, page_size: 50, sort }),
   });
   return (
     <Card>
@@ -160,6 +179,8 @@ function InventoryTable({ websiteId }: { websiteId: string }) {
           data={[{ value: "present", label: "Present" }, { value: "deleted", label: "Deleted (observed)" }, { value: "unverified", label: "Not observed (incomplete scan)" }]} />
         <Select placeholder="Malware verdict" clearable w={200} value={malware} onChange={(v) => { setMalware(v); setPage(1); }} aria-label="Malware verdict"
           data={[{ value: "flagged", label: "Malware or suspicious" }, { value: "infected", label: "Malware" }, { value: "suspicious", label: "Suspicious code" }, { value: "clean", label: "Clean" }, { value: "unavailable", label: "Not scanned" }, { value: "skipped_size", label: "Too large to scan" }]} />
+        <Select placeholder="Official release" clearable w={200} value={vendor} onChange={(v) => { setVendor(v); setPage(1); }} aria-label="Official release comparison"
+          data={[{ value: "tampered", label: "Modified or not in release" }, { value: "verified", label: "Genuine (verified)" }, { value: "modified", label: "Modified" }, { value: "unexpected", label: "Not in release" }]} />
       </Group>
       <DataTable<InventoryItem>
         rows={list.data?.items}
@@ -176,12 +197,55 @@ function InventoryTable({ websiteId }: { websiteId: string }) {
         columns={[
           { key: "path", header: "Path", sortable: true, render: (i) => <Text className="cw-mono">{i.path}{i.entry_type === "dir" ? "/" : ""}</Text> },
           { key: "state", header: "State", render: (i) => <HealthBadge state={i.state === "present" ? "active" : i.state === "deleted" ? "failed" : "unknown"} tooltip={i.state === "unverified" ? "Not observed in the last scan because part of the scan was incomplete. Not reported as deleted." : undefined} /> },
-          { key: "malware", header: "Malware scan", render: (i) => i.entry_type === "file" ? <MalwareBadge status={i.malware_status} signatures={i.malware_signatures} /> : null },
+          { key: "malware", header: "Malware scan", render: (i) => i.entry_type === "file" ? <MalwareBadge status={i.malware_status} signatures={i.malware_signatures} genuine={i.vendor_status === "verified" ? i.vendor_ref : null} /> : null },
+          { key: "vendor", header: "Official release", render: (i) => i.entry_type === "file" ? <VendorBadge status={i.vendor_status} release={i.vendor_ref} /> : null, visibleFrom: "sm" },
           { key: "size", header: "Size", sortable: true, render: (i) => <Text size="sm">{fmtBytes(i.size)}</Text>, visibleFrom: "sm" },
           { key: "sha256", header: "SHA-256", render: (i) => <Tooltip label={i.sha256 ?? humanize(i.hash_status)}><Text size="xs" className="cw-mono">{i.sha256 ? shortHash(i.sha256) : humanize(i.hash_status)}</Text></Tooltip>, visibleFrom: "md" },
           { key: "mtime", header: "Modified", sortable: true, render: (i) => <Text size="sm">{fmtDateTime(i.mtime)}</Text>, visibleFrom: "lg" },
           { key: "first_seen_at", header: "First seen", sortable: true, render: (i) => <Text size="sm">{fmtDateTime(i.first_seen_at)}</Text>, visibleFrom: "lg" },
           { key: "last_seen_at", header: "Last seen", sortable: true, render: (i) => <Text size="sm">{fmtRelative(i.last_seen_at)}</Text> },
+        ]}
+      />
+    </Card>
+  );
+}
+
+const CHECKSUM_STATUS: Record<string, { color: string; label: string; tip: string }> = {
+  verified: { color: "secure", label: "All files genuine", tip: "Every file listed in the official release matches it." },
+  modified: { color: "threat", label: "Differs from release", tip: "Some files are modified or not part of the official release. See the incidents and the file inventory." },
+  no_checksums: { color: "gray", label: "No official checksums", tip: "The publisher has no checksum list for this version (for example a premium plugin not hosted on wordpress.org)." },
+  unavailable: { color: "gray", label: "Not checked", tip: "wordpress.org could not be reached during the last scan. Files were not assumed genuine; heuristics applied as normal." },
+};
+
+function SoftwarePanel({ websiteId }: { websiteId: string }) {
+  const tid = useTenantId();
+  const q = useQuery({
+    queryKey: ["software", tid, websiteId],
+    queryFn: () => api.get<{ items: SoftwareInstall[] }>(`/tenants/${tid}/websites/${websiteId}/software`),
+  });
+  return (
+    <Card>
+      <Text size="sm" c="dimmed" mb="md">
+        WordPress installs and plugins found by file scans. Their files are compared with the official checksums published by wordpress.org: genuine files are not flagged by heuristic rules, and modified or extra files in core directories are reported.
+      </Text>
+      <DataTable<SoftwareInstall>
+        rows={q.data?.items}
+        loading={q.isLoading}
+        error={q.error}
+        rowKey={(s) => `${s.product}:${s.root}:${s.slug}`}
+        empty={<EmptyState title="No software detected yet" description="WordPress core and plugins are detected during file scans." />}
+        columns={[
+          { key: "name", header: "Software", render: (s) => <Text size="sm" fw={600}>{s.product === "wordpress-core" ? "WordPress" : (s.name ?? s.slug)}{s.product === "wordpress-plugin" ? <Text span size="xs" c="dimmed"> plugin</Text> : null}</Text> },
+          { key: "version", header: "Version", render: (s) => <Text size="sm" className="cw-mono">{s.version ?? "unknown"}{s.locale ? ` (${s.locale})` : ""}</Text> },
+          { key: "root", header: "Location", render: (s) => <Text size="sm" className="cw-mono">/{s.root}</Text>, visibleFrom: "sm" },
+          {
+            key: "status", header: "Official checksums", render: (s) => {
+              const st = CHECKSUM_STATUS[s.checksum_status ?? "no_checksums"] ?? CHECKSUM_STATUS.no_checksums;
+              return <Tooltip label={st.tip} multiline w={280}><Badge color={st.color} variant="light" styles={{ root: { textTransform: "none" } }}>{st.label}</Badge></Tooltip>;
+            },
+          },
+          { key: "files", header: "Files", render: (s) => <Text size="sm">{s.files_verified} genuine{s.files_modified ? `, ${s.files_modified} modified` : ""}{s.files_unexpected ? `, ${s.files_unexpected} not in release` : ""}</Text>, visibleFrom: "md" },
+          { key: "seen", header: "Last seen", render: (s) => <Text size="sm">{fmtRelative(s.last_seen_at)}</Text>, visibleFrom: "lg" },
         ]}
       />
     </Card>

@@ -10,14 +10,14 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import and_, not_, or_, select
 from sqlalchemy.orm import Session
 
 from app.api.deps import TenantContext, require
 from app.core.errors import NotFound, ValidationFailed
 from app.core.permissions import P
 from app.db.session import get_db
-from app.models import FileChange, FileInventoryItem, FileSnapshot, ScanJob, SnapshotError, Website
+from app.models import FileChange, FileInventoryItem, FileSnapshot, ScanJob, SnapshotError, SoftwareInstall, Website
 from app.monitoring import jobs
 from app.monitoring.file_scan import load_entries
 from app.monitoring.inventory import ROOT, EntryRecord, InventoryResult, diff_inventories
@@ -112,6 +112,7 @@ def inventory(
     file_type: str | None = Query(None, max_length=32),
     hash_status: str | None = Query(None, max_length=16),
     malware: str | None = Query(None, pattern="^(infected|suspicious|clean|skipped_size|unavailable|error|flagged)$"),
+    vendor: str | None = Query(None, pattern="^(verified|modified|unexpected|tampered)$"),
     sort: str = Query("path", pattern="^-?(path|size|mtime|last_seen_at|first_seen_at)$"),
 ) -> dict:
     w = _website(db, ctx, website_id)
@@ -127,9 +128,18 @@ def inventory(
     if hash_status:
         query = query.where(FileInventoryItem.hash_status == hash_status)
     if malware == "flagged":
-        query = query.where(FileInventoryItem.malware_status.in_(["infected", "suspicious"]))
+        # Heuristic matches on files identical to the official release are not findings.
+        query = query.where(or_(
+            FileInventoryItem.malware_status == "infected",
+            and_(FileInventoryItem.malware_status == "suspicious",
+                 not_(FileInventoryItem.vendor_status.is_not_distinct_from("verified"))),
+        ))
     elif malware:
         query = query.where(FileInventoryItem.malware_status == malware)
+    if vendor == "tampered":
+        query = query.where(FileInventoryItem.vendor_status.in_(["modified", "unexpected"]))
+    elif vendor:
+        query = query.where(FileInventoryItem.vendor_status == vendor)
     col = getattr(FileInventoryItem, sort.lstrip("-"))
     query = query.order_by(col.desc().nulls_last() if sort.startswith("-") else col.asc().nulls_last(),
                            FileInventoryItem.id)
@@ -137,8 +147,26 @@ def inventory(
         "path": i.path, "entry_type": i.entry_type, "size": i.size, "mtime": i.mtime, "sha256": i.sha256,
         "hash_status": i.hash_status, "file_type": i.file_type, "state": i.state, "first_seen_at": i.first_seen_at,
         "last_seen_at": i.last_seen_at, "malware_status": i.malware_status, "malware_signatures": i.malware_signatures,
-        "malware_scanned_at": i.malware_scanned_at,
+        "malware_scanned_at": i.malware_scanned_at, "vendor_status": i.vendor_status, "vendor_ref": i.vendor_ref,
     })
+
+
+@router.get("/websites/{website_id}/software")
+def software(
+    website_id: uuid.UUID,
+    ctx: TenantContext = Depends(require(P.INVENTORY_READ)),
+    db: Session = Depends(get_db),
+) -> dict:
+    """WordPress installs and plugins detected by file scans, with the official-checksum comparison."""
+    w = _website(db, ctx, website_id)
+    rows = db.execute(select(SoftwareInstall).where(SoftwareInstall.website_id == w.id)
+                      .order_by(SoftwareInstall.root, SoftwareInstall.product, SoftwareInstall.slug)).scalars()
+    return {"items": [{
+        "product": r.product, "slug": r.slug, "name": r.name, "root": r.root, "version": r.version,
+        "locale": r.locale, "checksum_status": r.checksum_status, "files_verified": r.files_verified,
+        "files_modified": r.files_modified, "files_unexpected": r.files_unexpected,
+        "first_seen_at": r.first_seen_at, "last_seen_at": r.last_seen_at,
+    } for r in rows]}
 
 
 def _changes_query(ctx: TenantContext, website_id, change_type, severity, since, until, q, snapshot_id):
