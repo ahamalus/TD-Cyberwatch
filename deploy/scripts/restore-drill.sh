@@ -82,5 +82,5 @@ fi
 
 echo
 echo "RESTORE DRILL PASSED for $STAMP in $(( $(date +%s) - started ))s. Nothing on the live system was changed."
-echo "Record the result (date, backup, duration) in docs/OPERATIONS.md, then delete the key from this server:"
+echo "Record the result (date, backup, duration) in docs/DEPLOYMENT.md section 5, then delete the key from this server:"
 echo "    shred -u $AGE_IDENTITY"

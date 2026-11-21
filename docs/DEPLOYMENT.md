@@ -119,6 +119,7 @@ It stops the services, restores, migrates, verifies the audit chain and restarts
 | Date | Backup set | Drill result | Duration | By |
 |---|---|---|---|---|
 | 2026-11-20 | test stack | PASSED (checksums, restore, audit chain, storage) | 9 s | development check |
+| 2026-11-21 | 20261121T105627Z (production, R630 CyberWatch VM) | PASSED (checksums, restore, schema 0002, audit chain 22 events, storage) | 9 s | Trust Data |
 
 ## 6. Upgrade and rollback
 
