@@ -3,6 +3,18 @@
 Last updated: 2026-10-19 (session 1). Statuses: **Not Started · In Progress · Implemented · Tested · Blocked**.
 "Tested" means automated tests were written **and executed** in this session with the results shown.
 
+## Production deployment (Trust Data, 2026-11-21)
+
+| Item | State |
+|---|---|
+| Public address | **https://cyberwatch.trustdata.ng** through a Cloudflare Tunnel (`cyberwatch-edge`) to the edge VM. No router port forwarding; the Jitsi and IIS routing is unchanged |
+| Office address | https://192.168.1.241 (edge VM, Caddy internal CA, private networks only) |
+| Hosting | Dell R630, Windows Server 2025 Hyper-V. VMs: `edge` 192.168.1.241, `cyberwatch` 192.168.1.242 (12 GB) |
+| Health check | All PASS: containers, workers, scheduler, queue, audit chain, ClamAV 1.4.7 with official signatures, Zoho email, backup, edge-only rule, firewall |
+| Backups | Nightly encrypted (age), copied daily to the Windows host. Restore drill PASSED 2026-11-21 |
+| Email | Zoho (smtppro.zoho.com) as hello@trustdata.ng. SPF includes Zoho; Zoho DKIM verified; DMARC p=none (move to quarantine after review) |
+| Not yet | No customer websites connected; cPanel connector not yet verified against a live server (Phase 2) |
+
 ## Test runs executed (actual results)
 
 | Suite | Command | Result |
