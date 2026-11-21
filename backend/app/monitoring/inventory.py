@@ -59,7 +59,7 @@ class ScanLimits:
     max_depth: int
 
 
-@dataclass
+@dataclass(slots=True)
 class EntryRecord:
     path: str
     entry_type: str
@@ -334,7 +334,7 @@ def _walk(source, exclusions, limits, progress, hash_files, inspector, previous,
 # --------------------------------------------------------------------------
 
 
-@dataclass
+@dataclass(slots=True)
 class PrevEntry:
     entry_type: str
     size: int | None

@@ -58,7 +58,8 @@ class Settings(BaseSettings):
     # Scan limits (defaults; plans and website config may lower them)
     scan_max_file_bytes: int = 25 * 1024 * 1024
     scan_max_total_bytes: int = 2 * 1024 * 1024 * 1024
-    scan_max_files: int = 200_000
+    # Generous: a scan that reaches this stops early and misses everything walked after it.
+    scan_max_files: int = 500_000
     scan_max_seconds: int = 60 * 60
     scan_max_depth: int = 40
     connect_timeout_seconds: float = 15.0
@@ -105,6 +106,10 @@ class Settings(BaseSettings):
     whatsapp_api_version: str = "v21.0"
     whatsapp_phone_number_id: str | None = None
     whatsapp_access_token: SecretStr | None = None
+    # Webhook (delivery receipts, STOP opt-outs): the Meta app secret signs requests; the verify token is a
+    # random string you choose and enter in the Meta developer console.
+    whatsapp_app_secret: SecretStr | None = None
+    whatsapp_verify_token: SecretStr | None = None
 
     # Billing (Paystack)
     paystack_secret_key: SecretStr | None = None
@@ -123,7 +128,8 @@ class Settings(BaseSettings):
     def _blank_to_none(cls, v: object) -> object:
         return None if isinstance(v, str) and not v.strip() else v
 
-    @field_validator("smtp_password", "whatsapp_access_token", "paystack_secret_key", mode="before")
+    @field_validator("smtp_password", "whatsapp_access_token", "whatsapp_app_secret", "whatsapp_verify_token",
+                     "paystack_secret_key", mode="before")
     @classmethod
     def _blank_secret_to_none(cls, v: object) -> object:
         return None if isinstance(v, str) and not v.strip() else v

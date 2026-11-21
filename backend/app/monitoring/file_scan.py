@@ -10,7 +10,8 @@ from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
 
-from sqlalchemy import insert, select, update
+from sqlalchemy import Text, func, insert, select, update
+from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
@@ -162,59 +163,66 @@ def _persist_entries(db: Session, snapshot: FileSnapshot, result: InventoryResul
         )
 
 
+INVENTORY_COMPARED = ("entry_type", "size", "mtime", "sha256", "hash_status", "malware_status", "malware_signatures",
+                      "malware_scanned_at", "vendor_status", "vendor_ref")
+
+
 def _update_inventory(
     db: Session, website: Website, snapshot: FileSnapshot, result: InventoryResult, deleted: list[str], unverified: list[str],
     vendor_report: vendor.VendorReport | None = None,
 ) -> None:
+    """Write the current state of every observed path.
+
+    Only rows whose state changed are rewritten; for the (usually vast) unchanged remainder a single statement
+    per batch refreshes ``last_seen_at``. A 200,000-file site therefore costs a few statements per scan instead
+    of rewriting every row."""
     now = snapshot.completed_at or utcnow()
     vstatus = vendor_report.status if vendor_report else {}
-    rows = [
-        {
-            "id": uuid.uuid4(),
-            "tenant_id": website.tenant_id,
-            "website_id": website.id,
-            "path": e.path,
-            "entry_type": e.entry_type,
-            "size": e.size,
-            "mtime": e.mtime,
-            "sha256": e.sha256,
-            "hash_status": e.hash_status,
-            "file_type": file_type_of(e.path) if e.entry_type == "file" else None,
-            "malware_status": e.inspection.status if e.inspection else None,
-            "malware_signatures": e.inspection.signatures if e.inspection else [],
-            "malware_scanned_at": e.inspection.scanned_at if e.inspection else None,
-            "vendor_status": vstatus.get(e.path, (None, None))[0],
-            "vendor_ref": vstatus.get(e.path, (None, None))[1],
-            "state": "present",
-            "first_seen_at": now,
-            "last_seen_at": now,
-            "last_snapshot_id": snapshot.id,
-        }
-        for e in result.entries.values()
-        if e.path != ROOT
-    ]
-    for i in range(0, len(rows), 2000):
-        stmt = pg_insert(FileInventoryItem).values(rows[i : i + 2000])
+    cols = [getattr(FileInventoryItem, c) for c in INVENTORY_COMPARED]
+    existing: dict[str, tuple] = {
+        r[0]: tuple(tuple(v) if isinstance(v, list) else v for v in r[1:])
+        for r in db.execute(select(FileInventoryItem.path, FileInventoryItem.state, *cols)
+                            .where(FileInventoryItem.website_id == website.id))
+    }
+    changed: list[dict[str, Any]] = []
+    unchanged: list[str] = []
+    for e in result.entries.values():
+        if e.path == ROOT:
+            continue
+        v = vstatus.get(e.path, (None, None))
+        sigs = e.inspection.signatures if e.inspection else []
+        current = (e.entry_type, e.size, e.mtime, e.sha256, e.hash_status,
+                   e.inspection.status if e.inspection else None, tuple(sigs),
+                   e.inspection.scanned_at if e.inspection else None, v[0], v[1])
+        before = existing.get(e.path)
+        if before is not None and before[0] == "present" and before[1:] == current:
+            unchanged.append(e.path)
+            continue
+        changed.append({
+            "id": uuid.uuid4(), "tenant_id": website.tenant_id, "website_id": website.id, "path": e.path,
+            "entry_type": e.entry_type, "size": e.size, "mtime": e.mtime, "sha256": e.sha256,
+            "hash_status": e.hash_status, "file_type": file_type_of(e.path) if e.entry_type == "file" else None,
+            "malware_status": current[5], "malware_signatures": list(sigs), "malware_scanned_at": current[7],
+            "vendor_status": v[0], "vendor_ref": v[1], "state": "present",
+            "first_seen_at": now, "last_seen_at": now, "last_snapshot_id": snapshot.id,
+        })
+    if changed:
+        stmt = pg_insert(FileInventoryItem)
         stmt = stmt.on_conflict_do_update(
             constraint="uq_inventory_website_path",
-            set_={
-                "entry_type": stmt.excluded.entry_type,
-                "size": stmt.excluded.size,
-                "mtime": stmt.excluded.mtime,
-                "sha256": stmt.excluded.sha256,
-                "hash_status": stmt.excluded.hash_status,
-                "file_type": stmt.excluded.file_type,
-                "malware_status": stmt.excluded.malware_status,
-                "malware_signatures": stmt.excluded.malware_signatures,
-                "malware_scanned_at": stmt.excluded.malware_scanned_at,
-                "vendor_status": stmt.excluded.vendor_status,
-                "vendor_ref": stmt.excluded.vendor_ref,
-                "state": "present",
-                "last_seen_at": stmt.excluded.last_seen_at,
-                "last_snapshot_id": stmt.excluded.last_snapshot_id,
-            },
+            set_={c: stmt.excluded[c] for c in (*INVENTORY_COMPARED, "file_type", "last_seen_at", "last_snapshot_id")}
+            | {"state": "present"},
         )
-        db.execute(stmt)
+        for i in range(0, len(changed), 5000):
+            db.execute(stmt, changed[i : i + 5000])  # one prepared statement, many rows
+    for i in range(0, len(unchanged), 20000):
+        db.execute(
+            update(FileInventoryItem)
+            .where(FileInventoryItem.website_id == website.id,
+                   FileInventoryItem.path == func.any(func.cast(unchanged[i : i + 20000], ARRAY(Text))))
+            .values(last_seen_at=now, last_snapshot_id=snapshot.id)
+            .execution_options(synchronize_session=False)
+        )
     for paths, state in ((deleted, "deleted"), (unverified, "unverified")):
         for i in range(0, len(paths), 1000):
             db.execute(
