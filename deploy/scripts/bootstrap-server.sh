@@ -115,6 +115,7 @@ if [ ! -f .env ]; then
   sed \
     -e "s|^CW_PUBLIC_BASE_URL=.*|CW_PUBLIC_BASE_URL=https://$CW_DOMAIN|" \
     -e "s|^POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=$(openssl rand -hex 24)|" \
+    -e "s|^POSTGRES_APP_PASSWORD=.*|POSTGRES_APP_PASSWORD=$(openssl rand -hex 24)|" \
     -e "s|^REDIS_PASSWORD=.*|REDIS_PASSWORD=$(openssl rand -hex 24)|" \
     -e "s|^CW_CREDENTIAL_KEYS=.*|CW_CREDENTIAL_KEYS=k1:$KEY|" \
     .env.example > .env

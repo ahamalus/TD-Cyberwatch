@@ -136,11 +136,18 @@ def test_audit_chain_detects_tampering():
         with pytest.raises(Exception):
             db.execute(text("UPDATE audit_events SET action='x'"))
         db.rollback()
-        # ...and if bypassed (e.g. trigger disabled by a superuser), verification fails.
-        db.execute(text("ALTER TABLE audit_events DISABLE TRIGGER audit_events_append_only"))
-        db.execute(text("UPDATE audit_events SET details='{\"i\": 99}' WHERE action='test.event2'"))
-        db.execute(text("ALTER TABLE audit_events ENABLE TRIGGER audit_events_append_only"))
-        db.commit()
+    # ...and if bypassed (e.g. trigger disabled by the database owner), verification fails.
+    from sqlalchemy import create_engine
+
+    from tests.conftest import OWNER_URL
+
+    owner = create_engine(OWNER_URL)
+    with owner.begin() as conn:
+        conn.execute(text("ALTER TABLE audit_events DISABLE TRIGGER audit_events_append_only"))
+        conn.execute(text("UPDATE audit_events SET details='{\"i\": 99}' WHERE action='test.event2'"))
+        conn.execute(text("ALTER TABLE audit_events ENABLE TRIGGER audit_events_append_only"))
+    owner.dispose()
+    with platform_session() as db:
         res = audit.verify_chain(db)
         assert not res.valid and res.reason
 

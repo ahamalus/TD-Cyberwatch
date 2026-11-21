@@ -9,7 +9,7 @@ set -a; . ./.env; set +a
 read -r -p "This REPLACES database $POSTGRES_DB. Type the database name to continue: " confirm
 [ "$confirm" = "$POSTGRES_DB" ] || { echo "aborted"; exit 1; }
 docker compose stop api worker-monitoring worker-notifications scheduler web
-age -d -i "$AGE_IDENTITY" "$DUMP" | docker compose exec -T db pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" --clean --if-exists --no-owner
+age -d -i "$AGE_IDENTITY" "$DUMP" | docker compose exec -T db pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" --clean --if-exists --no-owner --no-privileges  # grants: re-applied by migrate
 docker compose run --rm migrate
 docker compose run --rm api python -m app.cli verify-audit
 docker compose up -d

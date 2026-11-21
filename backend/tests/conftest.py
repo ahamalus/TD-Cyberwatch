@@ -36,9 +36,16 @@ REFERENCE_TABLES = {"roles", "permissions", "role_permissions", "connector_defin
 DISPATCHED: list = []
 
 
+OWNER_URL = get_settings().database_url
+# With a superuser URL (CI), the suite runs as the restricted runtime login, as production does: migrations
+# as the owner, application code as an account that cannot bypass row-level security.
+ADMIN_URL = os.environ.get("CW_TEST_ADMIN_DATABASE_URL")
+APP_ROLE, APP_PASSWORD = "cw_test_runtime", "test-runtime-password-0123456789"
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _database() -> Iterator[None]:
-    url = get_settings().database_url
+    url = OWNER_URL
     engine = create_engine(url)
     with engine.begin() as conn:
         conn.execute(text("DROP SCHEMA IF EXISTS public CASCADE"))
@@ -53,8 +60,25 @@ def _database() -> Iterator[None]:
     with platform_session() as db:
         seed_reference_data(db)
         db.commit()
+    if ADMIN_URL:
+        from sqlalchemy.engine import make_url
+
+        from app.db.roles import ensure_app_role
+
+        admin = create_engine(ADMIN_URL)
+        with admin.begin() as conn:
+            ensure_app_role(conn, APP_ROLE, APP_PASSWORD)
+        get_settings().database_url = make_url(OWNER_URL).set(
+            username=APP_ROLE, password=APP_PASSWORD).render_as_string(hide_password=False)
+        reset_engine()
     yield
     reset_engine()
+    if ADMIN_URL:
+        get_settings().database_url = OWNER_URL
+        with admin.begin() as conn:
+            conn.exec_driver_sql(f'DROP OWNED BY "{APP_ROLE}"')
+            conn.exec_driver_sql(f'DROP ROLE IF EXISTS "{APP_ROLE}"')
+        admin.dispose()
 
 
 @pytest.fixture(autouse=True)
@@ -64,11 +88,12 @@ def _clean() -> Iterator[None]:
     get_limiter().reset()
     yield
     jobs.set_dispatcher(None)
-    with platform_session() as db:
-        tables = [r[0] for r in db.execute(text(
+    owner = create_engine(OWNER_URL)  # TRUNCATE is an owner privilege
+    with owner.begin() as conn:
+        tables = [r[0] for r in conn.execute(text(
             "SELECT tablename FROM pg_tables WHERE schemaname='public'")).all() if r[0] not in REFERENCE_TABLES]
-        db.execute(text("TRUNCATE " + ", ".join(tables) + " CASCADE"))
-        db.commit()
+        conn.execute(text("TRUNCATE " + ", ".join(tables) + " CASCADE"))
+    owner.dispose()
 
 
 @pytest.fixture

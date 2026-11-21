@@ -22,6 +22,7 @@
 | Audit | Hash-chained audit events (append-only trigger), verification endpoint and CLI; incident history hash-chained; evidence content SHA-256 verified on view | `services/audit.py`, `services/incidents.py` |
 | Payments | Webhook HMAC-SHA512 verification, dedup by event key, **re-verification with Paystack API before any change**, amount/currency/reference matching, no card data | `services/billing.py` |
 | Exports | CSV formula-injection neutralisation; reports hashed; downloads tenant-checked and audited | `services/reports.py`, `api/v1/monitoring.py` |
+| Tenant isolation (database) | PostgreSQL RLS, FORCEd, applied to the runtime login `POSTGRES_APP_USER` (no superuser, no BYPASSRLS, no DDL). Migrations use the owner login. Health check fails if the runtime login bypasses RLS; CI runs the whole suite as such a login | `db/roles.py`, `docker-compose.yml` |
 | Config | Production start refused with debug, dev DB password, insecure cookies, private outbound overrides, or disabled staff MFA | `core/config.py` |
 | Containers | Non-root users, read-only root FS, `no-new-privileges`, all capabilities dropped, DB/Redis on internal-only network | `docker-compose.yml` |
 

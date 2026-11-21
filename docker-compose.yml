@@ -3,15 +3,23 @@
 # put an HTTPS reverse proxy (deploy/nginx or Caddy) in front of it.
 # PostgreSQL and Redis are never published.
 
+# Database logins: POSTGRES_USER owns the schema (a superuser, used only by "migrate"). The API and
+# workers connect as POSTGRES_APP_USER, which cannot bypass row-level security and never receives the
+# owner password. Without POSTGRES_APP_PASSWORD in .env they fall back to the owner login and the
+# health check reports "database role" FAIL (deploy/scripts/enable-app-db-role.sh fixes it).
+x-backend-env: &backend-env
+  CW_DATABASE_URL: postgresql+psycopg://${POSTGRES_APP_USER:-${POSTGRES_USER}}:${POSTGRES_APP_PASSWORD:-${POSTGRES_PASSWORD}}@db:5432/${POSTGRES_DB}
+  POSTGRES_PASSWORD: ""
+  POSTGRES_APP_PASSWORD: ""
+  CW_REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+  # Malware scanning daemon; set CW_CLAMAV_HOST= (empty) in .env to run without ClamAV.
+  CW_CLAMAV_HOST: ${CW_CLAMAV_HOST-clamav}
+
 x-backend: &backend
   build: ./backend
   image: trustdata/cyberwatch-backend:${CW_VERSION:-local}
   env_file: .env
-  environment:
-    CW_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
-    CW_REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
-    # Malware scanning daemon; set CW_CLAMAV_HOST= (empty) in .env to run without ClamAV.
-    CW_CLAMAV_HOST: ${CW_CLAMAV_HOST-clamav}
+  environment: *backend-env
   depends_on:
     db: { condition: service_healthy }
     redis: { condition: service_healthy }
@@ -71,7 +79,12 @@ services:
   migrate:
     <<: *backend
     restart: "no"
-    command: ["sh", "-c", "alembic upgrade head && python -m app.cli seed"]
+    environment:
+      <<: *backend-env
+      CW_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      CW_APP_DB_USER: ${POSTGRES_APP_USER:-}
+      CW_APP_DB_PASSWORD: ${POSTGRES_APP_PASSWORD:-}
+    command: ["sh", "-c", "alembic upgrade head && python -m app.cli seed && python -m app.cli ensure-app-role"]
 
   api:
     <<: *backend

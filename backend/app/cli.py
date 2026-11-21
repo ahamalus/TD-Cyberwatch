@@ -11,6 +11,8 @@
     python -m app.cli health                    # PASS/FAIL report of workers, scheduler, queue, audit
     python -m app.cli send-test-email ADDRESS   # send one email now and explain any SMTP failure
     python -m app.cli rules-selftest            # run the YARA rules over official WordPress releases now
+    python -m app.cli ensure-app-role           # create/repair the restricted runtime database login
+                                                # (CW_APP_DB_USER / CW_APP_DB_PASSWORD; run as the owner)
 """
 
 from __future__ import annotations
@@ -168,6 +170,37 @@ def _malware_health() -> tuple[bool, str, str]:
                                      f"({'age unknown' if age is None else f'{age:.0f}h old'}), YARA rules {st['yara_rules_version']}")
 
 
+def _db_role_health(db) -> tuple[bool, str, str]:
+    from app.db.roles import current_role_status
+
+    st = current_role_status(db.connection())
+    if st.rls_enforced:
+        return True, "database role", f"connected as {st.name}: row-level security enforced"
+    return False, "database role", (
+        f"connected as {st.name}, which {'is a superuser' if st.superuser else 'has BYPASSRLS'}: row-level "
+        "security is NOT enforced. Run deploy/scripts/enable-app-db-role.sh (DEPLOYMENT.md)")
+
+
+def cmd_ensure_app_role() -> None:
+    from sqlalchemy import create_engine
+
+    from app.db.roles import ensure_app_role
+
+    name = os.environ.get("CW_APP_DB_USER", "").strip()
+    password = os.environ.get("CW_APP_DB_PASSWORD", "")
+    if not name or not password:
+        print("ensure-app-role: CW_APP_DB_USER / CW_APP_DB_PASSWORD not set; skipped (the application keeps "
+              "using the owner login and the health check reports it).")
+        return
+    engine = create_engine(get_settings().database_url)
+    try:
+        with engine.begin() as conn:
+            result = ensure_app_role(conn, name, password)
+    finally:
+        engine.dispose()
+    print(f"ensure-app-role: {name} {result}; data access granted, row-level security applies.")
+
+
 def _selftest_health(db) -> tuple[bool, str, str]:
     from app.monitoring.malware import yara_rules
     from app.monitoring.selftest import quarantined_rules
@@ -258,6 +291,7 @@ def cmd_health() -> None:
         checks.append((stuck == 0, "job queue", "no checks waiting over 20 minutes" if stuck == 0 else f"{stuck} checks waiting over 20 minutes"))
         res = audit.verify_chain(db)
         checks.append((res.valid, "audit trail", f"{res.events_checked} events, chain {'intact' if res.valid else 'BROKEN at ' + str(res.first_invalid_seq)}"))
+        checks.append(_db_role_health(db))
         checks.append(_malware_health())
         checks.append(_selftest_health(db))
         checks.append(_email_health(db))
@@ -292,6 +326,8 @@ def main(argv: list[str]) -> None:
         cmd_health()
     elif cmd == "send-test-email" and len(args) == 1:
         cmd_send_test_email(args[0])
+    elif cmd == "ensure-app-role":
+        cmd_ensure_app_role()
     elif cmd == "rules-selftest":
         from app.monitoring.selftest import run_selftest
 

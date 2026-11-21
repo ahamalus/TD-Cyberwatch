@@ -70,6 +70,23 @@ Migrations run automatically through the `migrate` service on every `up`. Manual
 `alembic revision --autogenerate -m "..."` and review them (RLS policies for new tenant tables must be
 added by hand — see migration 0001).
 
+**Database logins.** PostgreSQL row-level security (RLS) is a second barrier between organisations, in
+case an application query ever forgets its tenant filter. A superuser skips RLS, and the account the
+PostgreSQL container creates (`POSTGRES_USER`) is a superuser. For that reason:
+
+- **`POSTGRES_USER`** owns the schema and is used only by the `migrate` service.
+- **`POSTGRES_APP_USER`** (default `cyberwatch_app`) is used by the API, workers and scheduler. It is not a
+  superuser and cannot bypass RLS, change the schema or alter the audit log. The owner password is not
+  passed into those containers.
+- **Maintenance:** `migrate` creates or repairs this login and its grants on every `up` with
+  `python -m app.cli ensure-app-role`.
+- **New servers:** `bootstrap-server.sh` generates `POSTGRES_APP_PASSWORD`.
+- **Existing servers:** run `sudo bash deploy/scripts/enable-app-db-role.sh` once. It adds the login to
+  `.env` (backing up the old file), restarts, and shows the `database role` health line.
+- **How to check:** `healthcheck.sh` reports `database role` FAIL while the application still connects as a
+  login that bypasses RLS.
+- **Backups:** these still run as the owner, so they include every organisation.
+
 ## 5. Backup and restore
 
 **Set up (once, on the CyberWatch server):**
