@@ -300,7 +300,7 @@ function Suppressions() {
   const tid = useTenantId();
   const can = useCan();
   const [params] = useSearchParams();
-  const rules = useQuery({ queryKey: ["suppressions", tid], queryFn: () => api.get<{ id: string; rule_key: string; website_id: string | null; path_glob: string | null; reason: string; expires_at: string | null; is_active: boolean; created_at: string }[]>(`/tenants/${tid}/suppressions`) });
+  const rules = useQuery({ queryKey: ["suppressions", tid], queryFn: () => api.get<{ id: string; rule_key: string; website_id: string | null; path_glob: string | null; content_sha256: string | null; reason: string; expires_at: string | null; is_active: boolean; created_at: string }[]>(`/tenants/${tid}/suppressions`) });
   const [form, setForm] = useState({ rule_key: params.get("rule") ?? "", path_glob: "", reason: "" });
   useEffect(() => { if (params.get("rule")) setForm((f) => ({ ...f, rule_key: params.get("rule") ?? "" })); }, [params]);
   const create = useMutation({
@@ -317,7 +317,7 @@ function Suppressions() {
             <Card key={r.id} p="sm" shadow="none">
               <Group justify="space-between" wrap="nowrap">
                 <div>
-                  <Text size="sm" fw={600}>{r.rule_key}{r.path_glob ? ` · ${r.path_glob}` : ""}</Text>
+                  <Text size="sm" fw={600}>{r.rule_key}{r.path_glob ? ` · ${r.path_glob}` : ""}{r.content_sha256 ? <Text span size="xs" c="dimmed" className="cw-mono"> (this content only: {r.content_sha256.slice(0, 12)}…)</Text> : null}</Text>
                   <Text size="xs" c="dimmed">{r.reason}</Text>
                   <Text size="xs" c="dimmed">Created {fmtDateTime(r.created_at)}{r.expires_at ? ` · expires ${fmtDateTime(r.expires_at)}` : ""}</Text>
                 </div>

@@ -60,6 +60,7 @@ export function IncidentsPage() {
   const [selected, setSelected] = useState<string[]>([]);
   const [bulkOpen, setBulkOpen] = useState(false);
   const [bulkNote, setBulkNote] = useState("");
+  const [bulkApprove, setBulkApprove] = useState(true);
   const list = useQuery({
     queryKey: ["incidents", tid, openOnly, severity, category, mine, q, page, sort],
     queryFn: () =>
@@ -75,12 +76,12 @@ export function IncidentsPage() {
       }),
   });
   const bulk = useMutation({
-    mutationFn: () => api.post<{ updated: number; unchanged: number; skipped: { reference: string; reason: string }[] }>(`/tenants/${tid}/incidents/bulk-status`, {
-      incident_ids: selected, status: "closed", note: bulkNote.trim(), false_positive: true,
+    mutationFn: () => api.post<{ updated: number; unchanged: number; skipped: { reference: string; reason: string }[]; content_approved: number }>(`/tenants/${tid}/incidents/bulk-status`, {
+      incident_ids: selected, status: "closed", note: bulkNote.trim(), false_positive: true, approve_content: bulkApprove,
     }),
     onSuccess: (r) => {
       notifications.show({ color: "secure", title: `${r.updated} incident(s) closed as false positive`,
-        message: [r.unchanged ? `${r.unchanged} already closed.` : "", r.skipped.length ? `Not changed: ${r.skipped.map((x) => `${x.reference} (${x.reason})`).join("; ")}` : "Recorded in each incident's history."].filter(Boolean).join(" ") });
+        message: [r.unchanged ? `${r.unchanged} already closed.` : "", r.skipped.length ? `Not changed: ${r.skipped.map((x) => `${x.reference} (${x.reason})`).join("; ")}` : "Recorded in each incident's history.", r.content_approved ? `${r.content_approved} file version(s) approved.` : ""].filter(Boolean).join(" ") });
       setSelected([]); setBulkOpen(false); setBulkNote(""); list.refetch();
     },
     onError: (e) => notifications.show({ color: "threat", title: "Action failed", message: errorMessage(e) }),
@@ -159,6 +160,9 @@ export function IncidentsPage() {
           <Text size="sm">Each incident is closed, marked as a false positive, and your note is recorded in its history.</Text>
           <Textarea label="Reason" required autosize minRows={3} value={bulkNote} onChange={(e) => setBulkNote(e.currentTarget.value)}
             description={minCharsHint(bulkNote, 10, "Why these are not real threats, e.g. which rule misfired.")} />
+          <Checkbox checked={bulkApprove} onChange={(e) => setBulkApprove(e.currentTarget.checked)}
+            label="Don't alert again for these exact file contents"
+            description="Applies to file findings only: the same rule stays quiet for each file while its content is unchanged. Any edit to a file is checked again." />
           <Button onClick={() => bulk.mutate()} loading={bulk.isPending} disabled={bulkNote.trim().length < 10}>Close as false positive</Button>
         </Stack>
       </Modal>
@@ -173,11 +177,12 @@ export function IncidentDetailPage() {
   const [note, setNote] = useState("");
   const [resolution, setResolution] = useState("");
   const [falsePositive, setFalsePositive] = useState(false);
+  const [approveContent, setApproveContent] = useState(true);
   const q = useQuery({ queryKey: ["incident", tid, incidentId], queryFn: () => api.get<IncidentDetail>(`/tenants/${tid}/incidents/${incidentId}`) });
   const members = useQuery({ queryKey: ["members", tid], queryFn: () => api.get<{ user_id: string; full_name: string; email: string; status: string }[]>(`/tenants/${tid}/members`), enabled: can("members:read") });
   const onErr = (e: unknown) => notifications.show({ color: "threat", title: "Action failed", message: errorMessage(e) });
   const status = useMutation({
-    mutationFn: (body: { status: string; note?: string; false_positive?: boolean }) => api.post(`/tenants/${tid}/incidents/${incidentId}/status`, body),
+    mutationFn: (body: { status: string; note?: string; false_positive?: boolean; approve_content?: boolean }) => api.post(`/tenants/${tid}/incidents/${incidentId}/status`, body),
     onSuccess: () => { setResolution(""); q.refetch(); },
     onError: onErr,
   });
@@ -351,9 +356,13 @@ export function IncidentDetailPage() {
                     <>
                       <Textarea label="Resolution notes" description="Required to resolve or close." autosize minRows={3} value={resolution} onChange={(e) => setResolution(e.currentTarget.value)} />
                       <Checkbox label="Classify as false positive" checked={falsePositive} onChange={(e) => setFalsePositive(e.currentTarget.checked)} />
+                      {falsePositive && i.content_approvable && (
+                        <Checkbox ml="lg" label="Don't alert again for this exact file content" checked={approveContent} onChange={(e) => setApproveContent(e.currentTarget.checked)}
+                          description="This rule stays quiet for this file while its content is unchanged (matched by SHA-256). Any edit is checked again." />
+                      )}
                       <Group gap="xs">
                         {closing.map((t) => (
-                          <Button key={t} size="xs" color={t === "closed" ? "gray" : "secure"} disabled={!resolution.trim()} onClick={() => status.mutate({ status: t, note: resolution, false_positive: falsePositive })}>
+                          <Button key={t} size="xs" color={t === "closed" ? "gray" : "secure"} disabled={!resolution.trim()} onClick={() => status.mutate({ status: t, note: resolution, false_positive: falsePositive, approve_content: falsePositive && i.content_approvable && approveContent })}>
                             {humanize(t) === "Resolved" ? "Resolve" : "Close"}
                           </Button>
                         ))}

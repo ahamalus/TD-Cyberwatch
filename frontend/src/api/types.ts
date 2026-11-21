@@ -197,6 +197,7 @@ export interface Incident {
   requires_human_verification: boolean;
   risk_score: number | null;
   is_false_positive: boolean;
+  content_approvable: boolean;
   is_demo: boolean;
   resolved_at: string | null;
   closed_at: string | null;

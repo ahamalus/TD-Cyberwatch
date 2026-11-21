@@ -47,6 +47,7 @@ def incident_dict(i: Incident, names: dict, users: dict) -> dict:
         "occurrence_count": i.occurrence_count, "assigned_to": str(i.assigned_to) if i.assigned_to else None,
         "assigned_to_name": users.get(i.assigned_to), "requires_human_verification": i.requires_human_verification,
         "risk_score": i.risk_score, "is_false_positive": i.is_false_positive, "is_demo": i.is_demo,
+        "content_approvable": bool(i.website_id and svc.approvable_files(i)),
         "resolved_at": i.resolved_at, "closed_at": i.closed_at,
     }
 
@@ -144,13 +145,23 @@ class StatusIn(BaseModel):
     status: str = Field(pattern="^(new|acknowledged|investigating|contained|resolved|closed)$")
     note: str | None = Field(default=None, max_length=10000)
     false_positive: bool | None = None
+    # With a false-positive close: do not alert again on this rule for the exact same file content.
+    approve_content: bool = False
+
+
+def _check_approval(body) -> None:
+    if body.approve_content and not (body.false_positive and body.status in ("resolved", "closed")):
+        raise ValidationFailed("File content can only be approved when closing an incident as a false positive.")
 
 
 @router.post("/incidents/{incident_id}/status")
 def set_status(incident_id: uuid.UUID, body: StatusIn, ctx: TenantContext = Depends(require(P.INCIDENTS_MANAGE)),
                db: Session = Depends(get_db)) -> dict:
+    _check_approval(body)
     inc = svc.get_incident(db, ctx.tenant_id, incident_id)
     svc.change_status(db, inc, body.status, ctx.actor(), note=body.note, false_positive=body.false_positive)
+    if body.approve_content:
+        svc.approve_content(db, inc, ctx.actor())
     db.commit()
     return get_incident(incident_id, ctx, db)
 
@@ -164,6 +175,7 @@ class BulkStatusIn(BaseModel):
     status: str = Field(pattern="^(acknowledged|investigating|contained|resolved|closed)$")
     note: str | None = Field(default=None, max_length=10000)
     false_positive: bool | None = None
+    approve_content: bool = False
 
 
 @router.post("/incidents/bulk-status")
@@ -171,9 +183,10 @@ def bulk_status(body: BulkStatusIn, ctx: TenantContext = Depends(require(P.INCID
                 db: Session = Depends(get_db)) -> dict:
     """Change several incidents at once (e.g. close a batch of false positives with one note). Each change is
     recorded in its own incident history; incidents whose status cannot change that way are reported back."""
+    _check_approval(body)
     rows = db.execute(select(Incident).where(Incident.tenant_id == ctx.tenant_id,
                                              Incident.id.in_(body.incident_ids))).scalars().all()
-    updated, unchanged, skipped = 0, 0, []
+    updated, unchanged, skipped, approved = 0, 0, [], 0
     for inc in rows:
         if inc.status == body.status:
             unchanged += 1
@@ -181,11 +194,13 @@ def bulk_status(body: BulkStatusIn, ctx: TenantContext = Depends(require(P.INCID
         try:
             with db.begin_nested():
                 svc.change_status(db, inc, body.status, ctx.actor(), note=body.note, false_positive=body.false_positive)
+                if body.approve_content:
+                    approved += svc.approve_content(db, inc, ctx.actor())
             updated += 1
         except ValidationFailed as exc:
             skipped.append({"reference": inc.reference, "reason": exc.message})
     db.commit()
-    return {"updated": updated, "unchanged": unchanged, "skipped": skipped}
+    return {"updated": updated, "unchanged": unchanged, "skipped": skipped, "content_approved": approved}
 
 
 @router.post("/incidents/{incident_id}/notes")
@@ -231,7 +246,8 @@ def list_suppressions(ctx: TenantContext = Depends(require(P.INCIDENTS_READ)), d
     rows = db.execute(select(SuppressionRule).where(SuppressionRule.tenant_id == ctx.tenant_id)
                       .order_by(SuppressionRule.created_at.desc())).scalars()
     return [{"id": str(r.id), "rule_key": r.rule_key, "website_id": str(r.website_id) if r.website_id else None,
-             "path_glob": r.path_glob, "reason": r.reason, "expires_at": r.expires_at, "is_active": r.is_active,
+             "path_glob": r.path_glob, "content_sha256": r.content_sha256, "reason": r.reason,
+             "expires_at": r.expires_at, "is_active": r.is_active,
              "created_at": r.created_at} for r in rows]
 
 

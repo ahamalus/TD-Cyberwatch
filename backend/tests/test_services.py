@@ -841,7 +841,7 @@ def test_bulk_close_incidents_as_false_positive(alice, bob):
                json={"incident_ids": [str(i) for i in ids], "status": "closed", "false_positive": True,
                      "note": "YARA rule misfired on WordPress core docblocks"})
     assert r.status_code == 200, r.text
-    assert r.json() == {"updated": 2, "unchanged": 1, "skipped": []}
+    assert r.json() == {"updated": 2, "unchanged": 1, "skipped": [], "content_approved": 0}
     for iid in ids[1:]:
         inc = s.get(f"/api/v1/tenants/{tid}/incidents/{iid}").json()
         assert inc["status"] == "closed" and inc["is_false_positive"] is True

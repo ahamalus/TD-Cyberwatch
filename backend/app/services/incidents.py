@@ -77,6 +77,8 @@ class DetectionSpec:
     hosting_account_id: uuid.UUID | None = None
     requires_human_verification: bool = True
     path_for_suppression: str | None = None
+    # SHA-256 of the file content the detection is about, for content approvals.
+    content_sha256: str | None = None
     is_demo: bool = False
 
 
@@ -192,6 +194,11 @@ def _is_suppressed(db: Session, spec: DetectionSpec) -> SuppressionRule | None:
             continue
         if r.website_id and r.website_id != spec.website_id:
             continue
+        if r.content_sha256:
+            # Approval of one exact file content: literal path and identical bytes only.
+            if r.content_sha256 != spec.content_sha256 or r.path_glob != spec.path_for_suppression:
+                continue
+            return r
         if r.path_glob:
             if not spec.path_for_suppression or not matches_any(spec.path_for_suppression, [r.path_glob]):
                 continue
@@ -397,6 +404,46 @@ def change_status(
     audit.record(db, "incident.status_changed", actor=actor, tenant_id=incident.tenant_id,
                  target_type="incident", target_id=incident.id, details={"from": old, "to": new_status})
     return incident
+
+
+def approvable_files(incident: Incident) -> list[dict[str, str]]:
+    """Files of an incident whose exact content can be approved (path and SHA-256 known)."""
+    return [{"path": r["path"], "sha256": r["sha256"]} for r in incident.affected_resources or []
+            if isinstance(r, dict) and r.get("type") == "file" and r.get("path") and r.get("sha256")]
+
+
+def approve_content(db: Session, incident: Incident, actor: AuditActor) -> int:
+    """After a false-positive review: stop alerting on this rule for these exact file contents.
+
+    Scoped to the incident's website, rule, path and SHA-256. If the file changes in any way, the new content
+    is checked again. Returns the number of approvals created."""
+    if incident.website_id is None:
+        return 0
+    created = 0
+    for f in approvable_files(incident):
+        exists = db.execute(select(SuppressionRule.id).where(
+            SuppressionRule.tenant_id == incident.tenant_id, SuppressionRule.website_id == incident.website_id,
+            SuppressionRule.rule_key == incident.rule_key, SuppressionRule.path_glob == f["path"],
+            SuppressionRule.content_sha256 == f["sha256"], SuppressionRule.is_active.is_(True))).first()
+        if exists:
+            continue
+        rule = SuppressionRule(
+            tenant_id=incident.tenant_id, website_id=incident.website_id, rule_key=incident.rule_key,
+            path_glob=f["path"][:512], content_sha256=f["sha256"], created_by=actor.user_id,
+            reason=f"Content approved after false-positive review of {incident.reference}.",
+        )
+        db.add(rule)
+        db.flush()
+        created += 1
+        add_event(db, incident, "note", actor_user_id=actor.user_id, actor_type=actor.actor_type,
+                  body=f"Approved this exact content of {f['path']} (SHA-256 {f['sha256'][:12]}…) for rule "
+                       f"{incident.rule_key}. Any change to the file will be checked again.",
+                  data={"suppression_id": str(rule.id), "path": f["path"], "sha256": f["sha256"]}, is_manual=True)
+        audit.record(db, "suppression.content_approved", actor=actor, tenant_id=incident.tenant_id,
+                     target_type="suppression", target_id=rule.id,
+                     details={"incident": incident.reference, "rule": incident.rule_key, "path": f["path"],
+                              "sha256": f["sha256"]})
+    return created
 
 
 def add_note(db: Session, incident: Incident, actor: AuditActor, body: str) -> IncidentEvent:

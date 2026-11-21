@@ -281,6 +281,7 @@ def _raise_incidents(
                 affected_resources=[{"type": "file", "path": c.path, "sha256": c.new.sha256 if c.new else None}],
                 evidence=[_change_evidence(c, snapshot)],
                 path_for_suppression=c.path,
+                content_sha256=c.new.sha256 if c.new else None,
                 is_demo=tenant_is_demo,
             )
             inc, created = incident_svc.raise_detection(db, spec)
@@ -360,15 +361,21 @@ def _raise_incidents(
 
 
 def _raise_malware_incidents(db: Session, website: Website, snapshot: FileSnapshot, result: InventoryResult,
-                             tenant_is_demo: bool, vendor_report: vendor.VendorReport | None = None) -> list[uuid.UUID]:
-    """One incident per file with a fresh detection. Cached verdicts (unchanged content) do not re-alert.
+                             tenant_is_demo: bool, vendor_report: vendor.VendorReport | None = None,
+                             previous: dict[str, PrevEntry] | None = None) -> list[uuid.UUID]:
+    """One incident per flagged file that is new or changed at its path, or whose verdict was just produced
+    (rescan, rule update). Unchanged files with a cached verdict do not re-alert. The verdict cache is shared
+    by content hash, so a cached verdict alone must never hide a file appearing at a new path or site.
 
     Files identical to the publisher's official release are not reported for heuristic (YARA) matches; an
     antivirus signature hit on such a file is still reported, but as a probable signature false positive."""
     opened: list[uuid.UUID] = []
     for e in result.entries.values():
         v = e.inspection
-        if v is None or not v.fresh or v.status not in (malware.INFECTED, malware.SUSPICIOUS):
+        if v is None or v.status not in (malware.INFECTED, malware.SUSPICIOUS):
+            continue
+        prev = (previous or {}).get(e.path)
+        if not v.fresh and prev is not None and prev.sha256 == e.sha256:
             continue
         genuine = vendor_report.status[e.path][1] if vendor_report and vendor_report.is_verified(e.path) else None
         if genuine and v.status == malware.SUSPICIOUS:
@@ -416,6 +423,7 @@ def _raise_malware_incidents(db: Session, website: Website, snapshot: FileSnapsh
             )],
             requires_human_verification=not confirmed,
             path_for_suppression=e.path,
+            content_sha256=e.sha256,
             is_demo=tenant_is_demo,
         )
         inc, created = incident_svc.raise_detection(db, spec)
@@ -491,7 +499,7 @@ def _raise_vendor_incidents(db: Session, website: Website, snapshot: FileSnapsho
                         "the edit is intentional."),
                     affected_resources=[{"type": "file", "path": path, "sha256": entries[path].sha256}],
                     evidence=[evidence([path], inst)],
-                    path_for_suppression=path, is_demo=tenant_is_demo,
+                    path_for_suppression=path, content_sha256=entries[path].sha256, is_demo=tenant_is_demo,
                 ))
             if overflow:
                 raise_(DetectionSpec(
@@ -749,7 +757,8 @@ def run_file_scan(
     opened = _raise_incidents(db, website, cfg, snapshot, changes, diff.withheld_reason if diff else None, demo, verified)
     if inspector is not None:
         inspector.flush()
-        opened += _raise_malware_incidents(db, website, snapshot, result, demo, vendor_report)
+        opened += _raise_malware_incidents(db, website, snapshot, result, demo, vendor_report,
+                                           prev_entries if prev else {})
     if vendor_report is not None:
         opened += _raise_vendor_incidents(db, website, snapshot, vendor_report, previous_vendor, result.entries, demo)
 

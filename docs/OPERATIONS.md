@@ -44,6 +44,16 @@
     heuristics apply as normal.
   - **To turn it off:** set `CW_VENDOR_CHECKSUMS_ENABLED=false`. Versions are still detected.
 
+- **Learning from false positives (content approvals)**:
+  - **How to approve:** when closing a file finding as a false positive (single or bulk), keep "Don't alert again
+    for this exact file content" ticked.
+  - **What it creates:** a suppression rule for that website, rule, exact path and SHA-256. The same bytes at
+    the same path stop alerting for that rule.
+  - **What still alerts:** any edit to the file, the same content at another path, and other rules.
+  - **Records:** each approval is added to the incident history and the audit log (`suppression.content_approved`).
+  - **Where to see them:** Notifications → Suppression rules, marked "this content only". Disable one there to
+    alert on that content again.
+
 ## Common problems
 
 | Symptom | Likely cause | Action |

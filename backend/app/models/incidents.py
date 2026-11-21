@@ -161,6 +161,9 @@ class SuppressionRule(UUIDPk, Timestamps, Base):
     )
     rule_key: Mapped[str] = mapped_column(String(80), nullable=False)
     path_glob: Mapped[str | None] = mapped_column(String(512))
+    # Content approval: suppresses the rule only for this exact file content (SHA-256) at exactly path_glob
+    # (matched literally, not as a pattern). Any change to the file is checked again.
+    content_sha256: Mapped[str | None] = mapped_column(String(64))
     reason: Mapped[str] = mapped_column(Text, nullable=False)
     created_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

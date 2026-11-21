@@ -1,4 +1,5 @@
-"""vendor checksum verification: MD5 per file, official checksum cache, detected software
+"""vendor checksum verification and content approvals: MD5 per file, official checksum cache, detected
+software, suppression of one exact file content
 
 Revision ID: 0003
 Revises: 0002
@@ -40,6 +41,7 @@ def upgrade() -> None:
     op.add_column("file_snapshot_entries", sa.Column("md5", sa.String(length=32), nullable=True))
     op.add_column("file_inventory_items", sa.Column("vendor_status", sa.String(length=16), nullable=True))
     op.add_column("file_inventory_items", sa.Column("vendor_ref", sa.String(length=200), nullable=True))
+    op.add_column("suppression_rules", sa.Column("content_sha256", sa.String(length=64), nullable=True))
 
     # Public data (published release checksums): not tenant-scoped.
     op.create_table(
@@ -91,6 +93,7 @@ def downgrade() -> None:
     op.drop_index("ix_software_installs_tenant", table_name="software_installs")
     op.drop_table("software_installs")
     op.drop_table("vendor_checksums")
+    op.drop_column("suppression_rules", "content_sha256")
     op.drop_column("file_inventory_items", "vendor_ref")
     op.drop_column("file_inventory_items", "vendor_status")
     op.drop_column("file_snapshot_entries", "md5")
