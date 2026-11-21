@@ -6,7 +6,7 @@ import type { ReactNode } from "react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError, errorMessage } from "../api/client";
-import { humanize, minCharsHint } from "../components/format";
+import { humanize, minCharsHint, scanJobDetail } from "../components/format";
 import { CapabilityBadge, HealthBadge, MalwareBadge, ScanBadge, SeverityBadge } from "../components/status";
 import { DataTable, ErrorState } from "../components/ui";
 import { theme } from "../design/theme";
@@ -163,5 +163,17 @@ describe("MalwareBadge", () => {
     expect(screen.queryByText("Clean")).not.toBeInTheDocument();
     rerender(<MantineProvider theme={theme}><MalwareBadge status={null} /></MantineProvider>);
     expect(screen.getByText("—")).toBeInTheDocument();
+  });
+});
+
+
+describe("scanJobDetail", () => {
+  it("shows live progress, then the outcome and an unfinished time-limited pass", () => {
+    expect(scanJobDetail({ status: "running", result_summary: { progress: { files_seen: 4210, files_reused: 3900 } } }))
+      .toBe("4,210 files so far · 3,900 unchanged (not re-downloaded)");
+    expect(scanJobDetail({ status: "partial", result_summary: { files_seen: 9000, changes: 0, limits_hit: ["time"] } }))
+      .toBe("9,000 files · 0 changes · time limit reached, the next scan continues");
+    expect(scanJobDetail({ status: "failed", error_message: "cPanel rejected the API token or username." }))
+      .toBe("cPanel rejected the API token or username.");
   });
 });

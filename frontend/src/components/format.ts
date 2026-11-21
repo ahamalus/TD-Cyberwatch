@@ -58,3 +58,20 @@ export function minCharsHint(value: string, min: number, help?: string): string 
   const rule = n < min ? `At least ${min} characters (${n}/${min}).` : "";
   return [help, rule].filter(Boolean).join(" ") || undefined;
 }
+
+/** One-line description of a scan job: live progress while running, outcome when finished. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function scanJobDetail(j: { status: string; error_message?: string | null; result_summary?: any }): string {
+  if (j.error_message) return j.error_message;
+  const r = j.result_summary ?? {};
+  if (j.status === "running" && r.progress) {
+    const p = r.progress;
+    return `${fmtNumber(p.files_seen)} files so far` + (p.files_reused ? ` · ${fmtNumber(p.files_reused)} unchanged (not re-downloaded)` : "");
+  }
+  if (r.files_seen === undefined) return "";
+  let text = `${fmtNumber(r.files_seen)} files · ${fmtNumber(r.changes ?? 0)} changes`;
+  if (r.files_reused) text += ` · ${fmtNumber(r.files_reused)} unchanged`;
+  if ((r.limits_hit ?? []).includes("time")) text += " · time limit reached, the next scan continues";
+  return text;
+}
+

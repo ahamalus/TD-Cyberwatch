@@ -7,7 +7,7 @@ import { Link, useSearchParams } from "react-router-dom";
 import { useCan, useTenantId } from "../../api/auth";
 import { api, downloadUrl, errorMessage } from "../../api/client";
 import type { FileChange, Job, Page, Website } from "../../api/types";
-import { fmtBytes, fmtDateTime, fmtRelative, humanize, shortHash } from "../../components/format";
+import { fmtBytes, fmtDateTime, fmtRelative, humanize, scanJobDetail, shortHash } from "../../components/format";
 import { HealthBadge, MalwareBadge, ScanBadge, SeverityBadge } from "../../components/status";
 import { DataTable, EmptyState, PageHeader, SearchInput } from "../../components/ui";
 
@@ -273,7 +273,7 @@ export function MonitoringPage() {
             { key: "queued", header: "Queued", render: (j) => <Text size="sm">{fmtRelative(j.queued_at)}</Text> },
             { key: "duration", header: "Duration", render: (j) => <Text size="sm">{j.duration_seconds !== null ? `${j.duration_seconds}s` : "—"}</Text>, visibleFrom: "sm" },
             { key: "attempts", header: "Attempts", render: (j) => <Text size="sm">{j.attempts}/{j.max_attempts}</Text>, visibleFrom: "lg" },
-            { key: "error", header: "Detail", render: (j) => <Text size="xs" c="dimmed" lineClamp={2}>{j.error_message ?? (j.result_summary?.files_seen !== undefined ? `${j.result_summary.files_seen} files · ${j.result_summary.changes ?? 0} changes` : "")}</Text>, visibleFrom: "md" },
+            { key: "error", header: "Detail", render: (j) => <Text size="xs" c="dimmed" lineClamp={2}>{scanJobDetail(j)}</Text>, visibleFrom: "md" },
             { key: "actions", header: "", render: (j) => can("scans:run") && (j.status === "queued" || j.status === "running") ? <Anchor component="button" size="sm" onClick={() => cancel.mutate(j.id)}>Cancel</Anchor> : null },
           ]}
         />

@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import posixpath
+import time
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import Any
 
 from sqlalchemy import insert, select, update
@@ -426,10 +428,43 @@ def _change_evidence(c: Change, snapshot: FileSnapshot) -> EvidenceSpec:
     )
 
 
+def _content_mode(db: Session, website_id: uuid.UUID, has_previous: bool) -> tuple[str, bool]:
+    """Decide how much content to download. Returns (mode, reuse_unchanged).
+
+    * ``full``: download everything (first scan, or the weekly full check that catches files altered with
+      a forged modification time).
+    * ``full_continued``: the previous full pass stopped at the time limit; continue it, reusing what that
+      pass already downloaded, so a large site completes over successive runs.
+    * ``incremental``: a full pass finished within ``full_content_check_days``; reuse hashes of files whose
+      size and modification time did not change.
+    """
+    if not has_previous:
+        return "full", False
+    jobs = db.execute(
+        select(ScanJob.result_summary).where(
+            ScanJob.website_id == website_id, ScanJob.job_type == "file_scan",
+            ScanJob.status.in_(["succeeded", "partial"]),
+        ).order_by(ScanJob.finished_at.desc()).limit(50)
+    ).scalars().all()
+    full_modes = ("full", "full_continued")
+    if jobs and jobs[0].get("content_mode") in full_modes and "time" in (jobs[0].get("limits_hit") or []):
+        return "full_continued", True
+    since = utcnow() - timedelta(days=get_settings().full_content_check_days)
+    finished_full = db.execute(
+        select(ScanJob.result_summary).where(
+            ScanJob.website_id == website_id, ScanJob.job_type == "file_scan",
+            ScanJob.status.in_(["succeeded", "partial"]), ScanJob.finished_at >= since,
+        )
+    ).scalars().all()
+    if any(j.get("content_mode") in full_modes and "time" not in (j.get("limits_hit") or []) for j in finished_full):
+        return "incremental", True
+    return "full", False
+
+
 def run_file_scan(
     db: Session,
     job: ScanJob,
-    heartbeat: Callable[[], None] | None = None,
+    heartbeat: Callable[..., None] | None = None,
 ) -> FileScanOutcome:
     website = db.get(Website, job.website_id)
     if website is None:
@@ -466,9 +501,15 @@ def run_file_scan(
     db.add(snapshot)
     db.commit()
 
-    def progress(_: InventoryResult) -> None:
-        if heartbeat:
-            heartbeat()
+    prev, prev_entries = load_previous(db, website.id, snapshot.id)
+    mode, reuse_unchanged = _content_mode(db, website.id, prev is not None)
+    last_beat = [0.0]
+
+    def progress(r: InventoryResult) -> None:
+        if heartbeat and time.monotonic() - last_beat[0] >= 10:
+            last_beat[0] = time.monotonic()
+            heartbeat({"files_seen": r.files_seen, "files_hashed": r.files_hashed, "files_reused": r.files_reused,
+                       "dirs_seen": r.dirs_seen, "content_mode": mode})
 
     # Malware inspection reuses the bytes downloaded for hashing (no second download).
     inspector = malware.ContentInspector(db, website.id) if hash_files else None
@@ -476,7 +517,8 @@ def run_file_scan(
         connector = build_connector(account, credential, definition)
         with connector.open_file_source(root) as source:
             result = walk_inventory(source, exclusions, scan_limits(cfg), progress=progress, hash_files=hash_files,
-                                    inspector=inspector)
+                                    inspector=inspector, previous=prev_entries if reuse_unchanged else None,
+                                    parallel=getattr(source, "parallel_reads", 1))
     except ConnectorError as exc:
         snapshot.status = "failed"
         snapshot.failure_reason = exc.message
@@ -508,7 +550,6 @@ def run_file_scan(
         db.commit()
         return FileScanOutcome(snapshot.id, "failed", {"reason": result.failure_reason, "errors": len(result.errors)})
 
-    prev, prev_entries = load_previous(db, website.id, snapshot.id)
     diff = diff_inventories(prev_entries, result, exclusions) if prev else None
     changes = diff.changes if diff else []
     critical = list(cfg.critical_paths) if cfg else []
@@ -560,6 +601,8 @@ def run_file_scan(
             "snapshot_id": str(snapshot.id),
             "files_seen": result.files_seen,
             "files_hashed": result.files_hashed,
+            "files_reused": result.files_reused,
+            "content_mode": mode,
             "errors": len(result.errors),
             "limits_hit": sorted(result.limits_hit),
             "changes": len(changes),

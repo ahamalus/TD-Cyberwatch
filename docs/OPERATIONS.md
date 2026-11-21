@@ -12,6 +12,18 @@
   Signatures older than 3 days or an unreachable scanner turn it red; scans then report files as "not scanned".
   Check the container with `docker compose logs --tail 50 clamav`. The first start downloads about 300 MB of signatures.
 
+- **How file scans read content**:
+  - **Full pass:** downloads and hashes every file. This happens on the first scan, and again at least every
+    `CW_FULL_CONTENT_CHECK_DAYS` (default 7) to catch files altered with a forged modification time.
+  - **Incremental scan:** in between, files whose size and modification time did not change keep their hash
+    and malware verdict, so they are not downloaded again.
+  - **Time limit:** a full pass that reaches the per-scan time limit (`CW_SCAN_MAX_SECONDS`, 1 hour) resumes
+    automatically 5 minutes later, keeping what it has done (at most 12 runs in a row).
+  - **Speed:** cPanel reads `CW_CPANEL_PARALLEL_READS` files at a time (default 4) over one kept-alive
+    connection.
+  - **PHP `error_log` files** are excluded by default.
+  - **Progress** is shown on running scans.
+
 ## Common problems
 
 | Symptom | Likely cause | Action |

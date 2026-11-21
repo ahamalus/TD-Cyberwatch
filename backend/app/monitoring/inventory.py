@@ -26,6 +26,7 @@ import posixpath
 import time
 from collections import deque
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Protocol
@@ -35,6 +36,8 @@ from app.connectors.base import ConnectorError, FileSource, join_rel
 ROOT = "."
 
 DEFAULT_EXCLUSIONS = [
+    # PHP error logs: written constantly by the site itself, not code; they would show up as changes on every scan.
+    "**/error_log",
     ".cache/**",
     ".trash/**",
     "tmp/**",
@@ -88,6 +91,7 @@ class InventoryResult:
     dirs_seen: int = 0
     files_hashed: int = 0
     files_not_hashed: int = 0
+    files_reused: int = 0  # hash taken from the previous scan (unchanged size and mtime)
     bytes_hashed: int = 0
     failure_reason: str | None = None
 
@@ -133,9 +137,21 @@ def hash_stream(chunks, keep_up_to: int = 0) -> tuple[str, int, bytes | None]:
 
 
 class ContentInspector(Protocol):
+    """Called from worker threads when reads are parallel, so implementations must be thread-safe."""
+
     max_bytes: int
 
     def inspect(self, path: str, sha256: str, data: bytes | None) -> Any: ...
+
+    def cached_verdict(self, sha256: str) -> Any | None: ...
+
+
+def _unchanged(prev: PrevEntry | None, size: int | None, mtime: datetime | None) -> bool:
+    """Same size and modification time as a file whose content was hashed in the previous scan."""
+    return bool(
+        prev is not None and prev.entry_type == "file" and prev.hash_status == "hashed" and prev.sha256
+        and size is not None and prev.size == size and mtime is not None and prev.mtime == mtime
+    )
 
 
 def walk_inventory(
@@ -145,7 +161,35 @@ def walk_inventory(
     progress: Callable[[InventoryResult], None] | None = None,
     hash_files: bool = True,
     inspector: ContentInspector | None = None,
+    previous: dict[str, PrevEntry] | None = None,
+    parallel: int = 1,
 ) -> InventoryResult:
+    """Walk the tree breadth-first, hashing file contents.
+
+    ``previous`` (entries of the last scan) enables incremental mode: a file with the same size and
+    modification time keeps its earlier hash and malware verdict instead of being downloaded again.
+    ``parallel`` > 1 downloads the files of each directory concurrently (for slow per-file APIs).
+    """
+    pool = ThreadPoolExecutor(max_workers=parallel, thread_name_prefix="scan-read") if parallel > 1 else None
+    try:
+        return _walk(source, exclusions, limits, progress, hash_files, inspector, previous or {}, pool)
+    finally:
+        if pool is not None:
+            pool.shutdown(wait=True)
+
+
+def _fetch(source: FileSource, inspector: ContentInspector | None, rel: str, size: int | None):
+    """Download, hash and (optionally) inspect one file. Runs in a worker thread when parallel."""
+    try:
+        keep = inspector.max_bytes if inspector and (size is None or size <= inspector.max_bytes) else 0
+        digest, n, data = hash_stream(source.read_chunks(rel), keep_up_to=keep)
+        verdict = inspector.inspect(rel, digest, data) if inspector is not None else None
+        return digest, n, verdict, None
+    except ConnectorError as exc:
+        return None, 0, None, exc
+
+
+def _walk(source, exclusions, limits, progress, hash_files, inspector, previous, pool) -> InventoryResult:
     result = InventoryResult(status="completed")
     started = time.monotonic()
     budget = limits.max_total_bytes
@@ -176,6 +220,7 @@ def walk_inventory(
             continue
         result.entries[rel_dir].hash_status = DIR_LISTED
         result.dirs_seen += 1
+        to_fetch: list[EntryRecord] = []
 
         for child in sorted(children, key=lambda c: c.name):
             try:
@@ -218,24 +263,40 @@ def walk_inventory(
                     result.files_not_hashed += 1
                     result.limits_hit.add("total_bytes")
                 else:
-                    try:
-                        keep = inspector.max_bytes if inspector and (child.size is None or child.size <= inspector.max_bytes) else 0
-                        digest, n, data = hash_stream(source.read_chunks(rel), keep_up_to=keep)
-                        rec.sha256 = digest
+                    prev = previous.get(rel)
+                    unchanged = _unchanged(prev, child.size, child.mtime)
+                    cached = inspector.cached_verdict(prev.sha256) if (unchanged and inspector) else None
+                    if unchanged and (inspector is None or cached is not None):
+                        rec.sha256 = prev.sha256
                         rec.hash_status = "hashed"
-                        if inspector is not None:
-                            rec.inspection = inspector.inspect(rel, digest, data)
-                        rec.size = n if rec.size is None else rec.size
-                        budget -= n
-                        result.bytes_hashed += n
+                        rec.inspection = cached
+                        result.files_reused += 1
                         result.files_hashed += 1
-                    except ConnectorError as exc:
-                        rec.hash_status = "error"
-                        result.files_not_hashed += 1
-                        result.errors.append(ScanErrorRecord(rel, exc.code, exc.message, False))
+                    else:
+                        budget -= child.size or 0  # reserve; corrected when the download finishes
+                        to_fetch.append(rec)
             result.entries[rel] = rec
             processed += 1
             if progress and processed % 200 == 0:
+                progress(result)
+
+        # Download this directory's files (concurrently when a pool is given).
+        if to_fetch:
+            jobs = [(source, inspector, r.path, r.size) for r in to_fetch]
+            outcomes = pool.map(lambda a: _fetch(*a), jobs) if pool is not None else (_fetch(*a) for a in jobs)
+            for rec, (digest, n, verdict, exc) in zip(to_fetch, outcomes, strict=True):
+                budget += rec.size or 0
+                if exc is not None:
+                    rec.hash_status = "error"
+                    result.files_not_hashed += 1
+                    result.errors.append(ScanErrorRecord(rec.path, exc.code, exc.message, False))
+                    continue
+                rec.sha256, rec.hash_status, rec.inspection = digest, "hashed", verdict
+                rec.size = n if rec.size is None else rec.size
+                budget -= n
+                result.bytes_hashed += n
+                result.files_hashed += 1
+            if progress:
                 progress(result)
 
     if result.errors or result.limits_hit & {"file_count", "time", "depth"} or any(e.entry_type == "dir" and e.hash_status != DIR_LISTED for e in result.entries.values()):

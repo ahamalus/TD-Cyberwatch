@@ -79,6 +79,12 @@ class Settings(BaseSettings):
     malware_max_file_bytes: int = 10 * 1024 * 1024
     malware_rescan_days: int = 7
 
+    # File scans: files with the same size and modification time as the last scan keep their hash and
+    # verdict; every full_content_check_days all content is downloaded again (catches forged timestamps).
+    full_content_check_days: int = 7
+    # Concurrent file downloads for connectors with one request per file (cPanel UAPI).
+    cpanel_parallel_reads: int = 4
+
     # Notifications
     smtp_host: str | None = None
     smtp_port: int = 587

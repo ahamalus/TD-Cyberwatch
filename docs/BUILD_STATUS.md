@@ -13,7 +13,7 @@ Last updated: 2026-10-19 (session 1). Statuses: **Not Started · In Progress · 
 | Health check | All PASS: containers, workers, scheduler, queue, audit chain, ClamAV 1.4.7 with official signatures, Zoho email, backup, edge-only rule, firewall |
 | Backups | Nightly encrypted (age), copied daily to the Windows host. Restore drill PASSED 2026-11-21 |
 | Email | Zoho (smtppro.zoho.com) as hello@trustdata.ng. SPF includes Zoho; Zoho DKIM verified; DMARC p=none (move to quarantine after review) |
-| Not yet | No customer websites connected; cPanel connector not yet verified against a live server (Phase 2) |
+| Phase 2 started | trustdata.ng connected via cPanel UAPI (wghp11.wghservers.com): connection test and capability discovery passed on the live server. The first full scan measured about 2.5 s per file (one HTTPS request per file over Starlink), so a two-WordPress site could not finish in 1 h. This led to parallel keep-alive reads, incremental scans and resumable full passes |
 
 ## Test runs executed (actual results)
 

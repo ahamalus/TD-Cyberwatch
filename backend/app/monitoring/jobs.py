@@ -155,13 +155,17 @@ def enqueue(
 # --------------------------------------------------------------------------
 
 
-def _heartbeat_fn(job_id: uuid.UUID) -> Callable[[], None]:
-    def beat() -> None:
+def _heartbeat_fn(job_id: uuid.UUID) -> Callable[..., None]:
+    def beat(progress: dict[str, Any] | None = None) -> None:
+        """Record liveness (and optional progress counters, shown while the job runs); honour cancellation."""
+        values: dict[str, Any] = {"heartbeat_at": utcnow()}
+        if progress is not None:
+            values["result_summary"] = {"progress": progress}
         with platform_session() as s:
             row = s.execute(
                 update(ScanJob)
                 .where(ScanJob.id == job_id)
-                .values(heartbeat_at=utcnow())
+                .values(**values)
                 .returning(ScanJob.cancel_requested)
             ).first()
             s.commit()
@@ -256,6 +260,35 @@ def handler(job_type: str):
     return deco
 
 
+CONTINUATION_DELAY_SECONDS = 300
+MAX_CONSECUTIVE_CONTINUATIONS = 12
+
+
+def _continue_unfinished_full_pass(job: ScanJob, summary: dict) -> None:
+    """A full content pass that stopped at the time limit is continued automatically a few minutes later
+    (it reuses what was already downloaded), so a large site completes its first pass without manual
+    re-runs. Capped, so a site that can never finish does not loop forever."""
+    if job.job_type != "file_scan" or job.website_id is None:
+        return
+    if summary.get("content_mode") not in ("full", "full_continued") or "time" not in (summary.get("limits_hit") or []):
+        return
+    with tenant_session(job.tenant_id) as db:
+        recent = db.execute(
+            select(ScanJob.trigger).where(ScanJob.website_id == job.website_id, ScanJob.job_type == "file_scan")
+            .order_by(ScanJob.queued_at.desc()).limit(MAX_CONSECUTIVE_CONTINUATIONS)
+        ).scalars().all()
+        if len(recent) >= MAX_CONSECUTIVE_CONTINUATIONS and all(t == "continuation" for t in recent):
+            log.warning("full_pass_continuation_cap", website_id=str(job.website_id))
+            return
+        nxt, created = enqueue(db, tenant_id=job.tenant_id, job_type="file_scan", website_id=job.website_id,
+                               trigger="continuation", commit=False)
+        if created:
+            nxt.not_before = utcnow() + timedelta(seconds=CONTINUATION_DELAY_SECONDS)
+        db.commit()
+    if created:
+        dispatch(nxt, countdown=CONTINUATION_DELAY_SECONDS)
+
+
 def run_job(job_id: uuid.UUID | str, worker: str | None = None) -> str | None:
     """Claim and execute one job. Returns the final status, or None if not claimed."""
     job_id = uuid.UUID(str(job_id))
@@ -271,6 +304,7 @@ def run_job(job_id: uuid.UUID | str, worker: str | None = None) -> str | None:
             status, summary = fn(db, job_row, beat)
             db.commit()
         _finish(job.id, status, summary=summary)
+        _continue_unfinished_full_pass(job, summary)
         return status
     except JobCancelled:
         _finish(job.id, "cancelled", error_class="cancelled", error_message="Cancelled by an operator.")

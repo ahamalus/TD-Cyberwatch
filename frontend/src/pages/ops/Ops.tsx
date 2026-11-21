@@ -21,7 +21,7 @@ import { Link } from "react-router-dom";
 import { usePlatformCan } from "../../api/auth";
 import { api, errorMessage } from "../../api/client";
 import type { Job, Page } from "../../api/types";
-import { fmtBytes, fmtDateTime, fmtRelative, humanize, minCharsHint } from "../../components/format";
+import { fmtBytes, fmtDateTime, fmtRelative, humanize, minCharsHint, scanJobDetail } from "../../components/format";
 import { HealthBadge, IncidentStatusBadge, ScanBadge, SeverityBadge } from "../../components/status";
 import { DataTable, EmptyState, ErrorState, KeyValue, LoadingBlock, PageHeader, Section, StatCard } from "../../components/ui";
 
@@ -118,7 +118,7 @@ export function ScanQueuePage() {
             { key: "type", header: "Job", render: (j) => <Box><Text size="sm" fw={600}>{humanize(j.job_type)}</Text><Text size="xs" c="dimmed">{j.tenant}</Text></Box> },
             { key: "status", header: "Status", render: (j) => <ScanBadge status={j.status} /> },
             { key: "q", header: "Queued", render: (j) => <Text size="sm">{fmtRelative(j.queued_at)}</Text> },
-            { key: "hb", header: "Heartbeat", render: (j) => <Text size="sm">{j.status === "running" ? fmtRelative(j.heartbeat_at) : "—"}</Text>, visibleFrom: "md" },
+            { key: "hb", header: "Heartbeat", render: (j) => j.status === "running" ? <Box><Text size="sm">{fmtRelative(j.heartbeat_at)}</Text><Text size="xs" c="dimmed">{scanJobDetail(j)}</Text></Box> : <Text size="sm">—</Text>, visibleFrom: "md" },
             { key: "att", header: "Attempts", render: (j) => <Text size="sm">{j.attempts}/{j.max_attempts}</Text> },
             { key: "err", header: "Error", render: (j) => <Tooltip label={j.error_message ?? ""} disabled={!j.error_message}><Text size="xs" c="dimmed" lineClamp={1}>{j.error_class ? humanize(j.error_class) : ""}</Text></Tooltip>, visibleFrom: "sm" },
             { key: "x", header: "", render: (j) => can("ops:jobs:manage") && (j.status === "failed" || j.status === "partial" || j.status === "cancelled" ? <Button size="xs" variant="subtle" onClick={() => retry.mutate(j.id)}>Retry</Button> : j.status === "queued" || j.status === "running" ? <Button size="xs" variant="subtle" color="threat" onClick={() => cancel.mutate(j.id)}>Cancel</Button> : null) },

@@ -151,6 +151,10 @@ class RemoteEntry:
 class FileSource(ABC):
     """Read-only access to files below ``root``. Paths are relative POSIX paths."""
 
+    # How many files may be read concurrently through this source (1 = sequential; read_chunks must be
+    # thread-safe when > 1).
+    parallel_reads: int = 1
+
     def __init__(self, root: str):
         self.root = normalise_root(root)
 

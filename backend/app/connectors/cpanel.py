@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import posixpath
+import threading
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from typing import Any
@@ -59,7 +60,7 @@ from app.connectors.base import (
     safe_rel,
 )
 from app.core.config import get_settings
-from app.core.http import pinned_request
+from app.core.http import PinnedSession, pinned_request
 from app.core.netguard import DNSResolutionError, TargetNotAllowed
 
 # get_file_content returns the whole file in one JSON response, so the size
@@ -68,25 +69,51 @@ CPANEL_MAX_CONTENT_BYTES = 5 * 1024 * 1024
 
 
 class CPanelClient:
-    def __init__(self, params, token: str):
+    def __init__(self, params, token: str, keep_alive: bool = False):
         self.params = params
         self._token = token
+        # File scans make one request per file: keep-alive reuses one vetted, pinned connection pool
+        # instead of a new DNS lookup and TLS handshake per file.
+        self._keep_alive = keep_alive
+        self._session: PinnedSession | None = None
+        self._session_lock = threading.Lock()
+
+    def _get_session(self) -> PinnedSession:
+        with self._session_lock:
+            if self._session is None:
+                p = self.params
+                self._session = PinnedSession(
+                    f"https://{p.hostname}:{p.port}", allowed_ports=get_settings().allowed_cpanel_ports,
+                    timeout=p.io_timeout, max_connections=max(1, get_settings().cpanel_parallel_reads))
+            return self._session
+
+    def close(self) -> None:
+        with self._session_lock:
+            if self._session is not None:
+                self._session.close()
+                self._session = None
 
     def call(self, module: str, function: str, query: dict[str, str]) -> Any:
         p = self.params
         settings = get_settings()
         url = f"https://{p.hostname}:{p.port}/execute/{module}/{function}"
+        headers = {"Authorization": f"cpanel {p.username}:{self._token}"}
+        max_body = CPANEL_MAX_CONTENT_BYTES * 2 + 65536
         try:
-            resp = pinned_request(
-                "GET",
-                url,
-                allowed_ports=settings.allowed_cpanel_ports,
-                headers={"Authorization": f"cpanel {p.username}:{self._token}"},
-                params=query,
-                timeout=p.io_timeout,
-                max_redirects=0,
-                max_body_bytes=CPANEL_MAX_CONTENT_BYTES * 2 + 65536,
-            )
+            if self._keep_alive:
+                resp = self._get_session().request("GET", f"/execute/{module}/{function}", headers=headers,
+                                                   params=query, max_body_bytes=max_body)
+            else:
+                resp = pinned_request(
+                    "GET",
+                    url,
+                    allowed_ports=settings.allowed_cpanel_ports,
+                    headers=headers,
+                    params=query,
+                    timeout=p.io_timeout,
+                    max_redirects=0,
+                    max_body_bytes=max_body,
+                )
         except TargetNotAllowed as exc:
             raise ConnectorError(E_TARGET_NOT_ALLOWED, str(exc)) from exc
         except DNSResolutionError as exc:
@@ -164,6 +191,11 @@ class CPanelFileSource(FileSource):
     def __init__(self, root: str, client: CPanelClient):
         super().__init__(root)
         self._client = client
+        # UAPI fetches one file per HTTPS request; a few at a time stays within shared-hosting process limits.
+        self.parallel_reads = max(1, get_settings().cpanel_parallel_reads)
+
+    def close(self) -> None:
+        self._client.close()
 
     def _dir_param(self, rel: str) -> str:
         # UAPI paths are relative to the account home directory.
@@ -229,10 +261,10 @@ class CPanelUAPIConnector(Connector):
     key = "cpanel_uapi"
     version = "0.9.0"
 
-    def _client(self) -> CPanelClient:
+    def _client(self, keep_alive: bool = False) -> CPanelClient:
         if self.secret is None or self.secret.kind != "api_token":
             raise ConnectorError(E_CONFIG, "cPanel UAPI requires a cPanel API token.")
-        return CPanelClient(self.params, self.secret.value)
+        return CPanelClient(self.params, self.secret.value, keep_alive=keep_alive)
 
     def test_connection(self) -> ConnectionTestResult:
         diags: list[Diagnostic] = []
@@ -304,4 +336,4 @@ class CPanelUAPIConnector(Connector):
         return list(results.values())
 
     def open_file_source(self, root: str) -> CPanelFileSource:
-        return CPanelFileSource(root, self._client())
+        return CPanelFileSource(root, self._client(keep_alive=True))

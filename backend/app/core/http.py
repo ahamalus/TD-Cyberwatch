@@ -45,6 +45,16 @@ class RedirectNotAllowed(Exception):
     pass
 
 
+def _read_limited(response: httpx.Response, max_body_bytes: int) -> tuple[bytes, bool]:
+    body = bytearray()
+    for chunk in response.iter_bytes():
+        body.extend(chunk)
+        if len(body) > max_body_bytes:
+            del body[max_body_bytes:]
+            return bytes(body), True
+    return bytes(body), False
+
+
 def _pinned_url(url: str, target: ResolvedTarget) -> str:
     parts = urlsplit(url)
     host = f"[{target.ip}]" if ":" in target.ip else target.ip
@@ -92,14 +102,7 @@ def pinned_request(
                     current = urljoin(current, location)
                     redirects += 1
                     continue
-                body = bytearray()
-                truncated = False
-                for chunk in response.iter_bytes():
-                    body.extend(chunk)
-                    if len(body) > max_body_bytes:
-                        truncated = True
-                        del body[max_body_bytes:]
-                        break
+                body, truncated = _read_limited(response, max_body_bytes)
                 return PinnedResponse(
                     status_code=response.status_code,
                     headers=response.headers,
@@ -112,3 +115,48 @@ def pinned_request(
                 )
             finally:
                 response.close()
+
+
+class PinnedSession:
+    """Keep-alive HTTPS connections to one host for many requests (e.g. one request per file).
+
+    The host is resolved and vetted against the outbound policy once, when the session is created;
+    every request then goes to that pinned IP over pooled connections, with the real hostname as TLS
+    SNI and certificate name. Redirects are never followed. Thread-safe.
+    """
+
+    def __init__(self, base_url: str, *, allowed_ports: list[int], timeout: float = 15.0,
+                 max_connections: int = 4, verify_tls: bool = True):
+        parts = urlsplit(base_url)
+        self.scheme = parts.scheme
+        self.hostname = normalise_hostname(parts.hostname or "")
+        self.port = parts.port or (443 if parts.scheme == "https" else 80)
+        self.target = resolve_public_target(self.hostname, self.port, allowed_ports)
+        limits = httpx.Limits(max_connections=max_connections, max_keepalive_connections=max_connections)
+        transport = _transport_factory() if _transport_factory else httpx.HTTPTransport(
+            verify=verify_tls, retries=0, limits=limits)
+        self._client = httpx.Client(transport=transport, timeout=timeout, follow_redirects=False)
+
+    def request(self, method: str, path: str, *, headers: dict[str, str] | None = None,
+                params: dict[str, str] | None = None, max_body_bytes: int = 1024 * 1024) -> PinnedResponse:
+        started = time.monotonic()
+        url = f"{self.scheme}://{self.hostname}:{self.port}{path}"
+        host_header = self.hostname if self.port in (80, 443) else f"{self.hostname}:{self.port}"
+        request = self._client.build_request(
+            method,
+            _pinned_url(url, self.target),
+            headers={"User-Agent": USER_AGENT, "Accept": "*/*", **(headers or {}), "Host": host_header},
+            params=params,
+            extensions={"sni_hostname": self.hostname},
+        )
+        response = self._client.send(request, stream=True)
+        try:
+            body, truncated = _read_limited(response, max_body_bytes)
+            return PinnedResponse(response.status_code, response.headers, body, url, self.target.ip,
+                                  int((time.monotonic() - started) * 1000), 0, truncated)
+        finally:
+            response.close()
+
+    def close(self) -> None:
+        self._client.close()
+
