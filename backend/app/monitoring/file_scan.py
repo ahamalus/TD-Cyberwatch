@@ -447,7 +447,8 @@ def _content_mode(db: Session, website_id: uuid.UUID, has_previous: bool) -> tup
         ).order_by(ScanJob.finished_at.desc()).limit(50)
     ).scalars().all()
     full_modes = ("full", "full_continued")
-    if jobs and jobs[0].get("content_mode") in full_modes and "time" in (jobs[0].get("limits_hit") or []):
+    # Scans recorded before content modes existed always downloaded everything: count them as full passes.
+    if jobs and jobs[0].get("content_mode", "full") in full_modes and "time" in (jobs[0].get("limits_hit") or []):
         return "full_continued", True
     since = utcnow() - timedelta(days=get_settings().full_content_check_days)
     finished_full = db.execute(
@@ -456,7 +457,8 @@ def _content_mode(db: Session, website_id: uuid.UUID, has_previous: bool) -> tup
             ScanJob.status.in_(["succeeded", "partial"]), ScanJob.finished_at >= since,
         )
     ).scalars().all()
-    if any(j.get("content_mode") in full_modes and "time" not in (j.get("limits_hit") or []) for j in finished_full):
+    if any(j.get("content_mode", "full") in full_modes and "time" not in (j.get("limits_hit") or [])
+           for j in finished_full if "files_seen" in j):
         return "incremental", True
     return "full", False
 

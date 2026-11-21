@@ -152,3 +152,14 @@ def test_time_limited_full_pass_schedules_its_own_continuation(alice, sftp_serve
                           .order_by(ScanJob.queued_at)).scalars().all()
     assert [j.trigger for j in jobs] == ["manual", "continuation"]
     assert jobs[1].status == "queued" and jobs[1].not_before > utcnow() + timedelta(minutes=4)
+
+
+def test_scan_from_before_content_modes_is_resumed(alice):
+    """A time-limited scan made by the previous version (no content_mode recorded) is continued, not restarted."""
+    _, tid = alice
+    wid = _site(tid)
+    with platform_session() as db:
+        db.add(ScanJob(tenant_id=tid, website_id=wid, job_type="file_scan", status="partial", finished_at=utcnow(),
+                       result_summary={"files_seen": 2841, "changes": 0, "limits_hit": ["time"]}))
+        db.commit()
+        assert _content_mode(db, wid, True) == ("full_continued", True)
