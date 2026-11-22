@@ -6,6 +6,7 @@ import hashlib
 import posixpath
 import uuid
 from collections.abc import Callable
+from datetime import timedelta
 from typing import Any
 
 from sqlalchemy import select
@@ -33,10 +34,14 @@ from app.services import incidents as incident_svc
 from app.services.incidents import DetectionSpec, EvidenceSpec
 
 # Where the hosting control panel keeps raw access logs when none are configured (relative to the account).
-DEFAULT_LOG_DIRS = {"cpanel_uapi": ["/access-logs"]}
+# cPanel: ~/access-logs holds the live logs but is a link outside the home directory, which hosts that jail
+# accounts (CloudLinux CageFS) do not let the API follow; ~/logs holds the daily gzip archives ("Archive logs
+# in your home directory" under Metrics > Raw Access).
+DEFAULT_LOG_DIRS = {"cpanel_uapi": ["/access-logs", "/logs"]}
+ARCHIVE_MAX_AGE_DAYS = 7  # archives untouched for longer are previous months: not analysed
 MAX_BYTES_PER_FILE = 20 * 1024 * 1024  # per run; the rest is read on the next run
 HEAD_BYTES = 256
-SKIP_SUFFIXES = (".gz", ".bz2", ".zip", "-bytes_log", ".offset", ".bkup")
+SKIP_SUFFIXES = (".bz2", ".zip", "-bytes_log", ".offset", ".bkup")
 
 
 def log_dirs(account: HostingAccount) -> list[str]:
@@ -83,7 +88,11 @@ def _context(db: Session, website: Website) -> logs.Context:
 def _read_new(db: Session, src, website: Website, directory: str, name: str, size: int | None) -> tuple[str, dict]:
     path = posixpath.join(directory, name)
     cursor = db.execute(select(LogCursor).where(LogCursor.website_id == website.id, LogCursor.path == path)).scalar_one_or_none()
-    head = src.read_range(name, 0, HEAD_BYTES)
+    unpacked = None
+    if logs.is_archive(name):
+        unpacked = logs.read_archive(src, name, size)  # archives are rewritten whole: read and decompress
+        size = len(unpacked)
+    head = unpacked[:HEAD_BYTES] if unpacked is not None else src.read_range(name, 0, HEAD_BYTES)
     head_hash = hashlib.sha256(head).hexdigest()
     offset = cursor.offset if cursor else 0
     note = "continued"
@@ -91,7 +100,10 @@ def _read_new(db: Session, src, website: Website, directory: str, name: str, siz
         note = "first read"
     elif cursor.head_sha256 != head_hash or (size is not None and size < offset):
         offset, note = 0, "rotated or truncated: read from the start"
-    data = src.read_range(name, offset, MAX_BYTES_PER_FILE) if (size is None or size > offset) else b""
+    if unpacked is not None:
+        data = unpacked[offset: offset + MAX_BYTES_PER_FILE]
+    else:
+        data = src.read_range(name, offset, MAX_BYTES_PER_FILE) if (size is None or size > offset) else b""
     complete = data.rfind(b"\n") + 1  # only whole lines; a partial last line is read next time
     text = data[:complete].decode("utf-8", "replace")
     if cursor is None:
@@ -117,13 +129,30 @@ def run_log_scan(db: Session, job: ScanJob, heartbeat: Callable[..., None] | Non
 
     entries: list[logs.LogEntry] = []
     unparsed, files = 0, []
+    configured = bool((account.options or {}).get("log_paths"))
+    recent = utcnow() - timedelta(days=ARCHIVE_MAX_AGE_DAYS)
     for directory in log_dirs(account):
         try:
             with connector.open_file_source(directory) as src:
                 for e in src.list_dir(""):
                     if e.entry_type != "file" or not site_log_file(e.name, website.hostname):
                         continue
-                    text, info = _read_new(db, src, website, directory, e.name, e.size)
+                    if logs.is_archive(e.name):
+                        if e.mtime is not None and e.mtime < recent:
+                            continue  # a previous month's archive
+                        cur = db.execute(select(LogCursor.updated_at).where(
+                            LogCursor.website_id == website.id,
+                            LogCursor.path == posixpath.join(directory, e.name))).scalar_one_or_none()
+                        if cur is not None and e.mtime is not None and e.mtime < cur:
+                            # Not rewritten since it was last analysed: nothing new, nothing to download.
+                            files.append({"file": posixpath.join(directory, e.name), "bytes": 0, "lines": 0,
+                                          "note": "unchanged since the last run"})
+                            continue
+                    try:
+                        text, info = _read_new(db, src, website, directory, e.name, e.size)
+                    except ValueError as exc:
+                        files.append({"file": posixpath.join(directory, e.name), "error": str(exc)})
+                        continue
                     parsed, bad = logs.parse(text)
                     entries += parsed
                     unparsed += bad
@@ -131,7 +160,10 @@ def run_log_scan(db: Session, job: ScanJob, heartbeat: Callable[..., None] | Non
                     if heartbeat:
                         heartbeat({"files": len(files), "requests": len(entries)})
         except ConnectorError as exc:
-            files.append({"file": directory, "error": exc.message})
+            # A default location that does not exist on this host is not an error when another one works.
+            files.append({"file": directory, "error": exc.message, "default_location": not configured})
+    if any("error" not in f for f in files):
+        files = [f for f in files if not f.get("default_location")]
     if not any("error" not in f for f in files):
         raise ScanPreconditionFailed("no_log_files", f"No access log for {website.hostname} was found in "
                                      f"{', '.join(log_dirs(account)) or 'the configured log directories'}.")

@@ -38,7 +38,10 @@ the size limit are recorded as `skipped_size` and compared by size/time with low
    recorded as metadata-only.
 
 4. **Access logs (optional, verified):**
-   - **Where:** `~/access-logs`, cPanel's *Raw Access* logs, which the cPanel account owner can read.
+   - **Where:** `~/access-logs`, cPanel's live *Raw Access* logs, and `~/logs`, the daily gzip archives.
+     `~/access-logs` is a link to the server's domain-log folder; hosts that jail accounts (CloudLinux
+     CageFS) make it unreachable through the API ("directory … does not exist"). There, enable *Archive
+     logs in your home directory* so `~/logs` is filled after each daily statistics run.
    - **How they are read:** with the same two Fileman functions as website files.
    - **When analysis starts:** only after the connection test reads a log and recognises the format.
    - **If the logs are elsewhere:** set the folder under *Log directories* on the connection, home-relative

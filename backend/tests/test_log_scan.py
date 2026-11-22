@@ -40,8 +40,12 @@ def _cap(acct):
 def _log_scan(sess, tid, wid):
     r = sess.post(f"/api/v1/tenants/{tid}/websites/{wid}/checks", json={"check": "log_scan"})
     assert r.status_code == 202, r.text
-    assert run_dispatched() == ["succeeded"]
+    outcome = run_dispatched()
     with platform_session() as db:
+        if outcome != ["succeeded"]:
+            err = db.execute(select(ScanJob.error_message).where(ScanJob.website_id == uuid.UUID(wid))
+                             .order_by(ScanJob.queued_at.desc()).limit(1)).scalar_one()
+            raise AssertionError(f"log scan {outcome}: {err}")
         return db.execute(select(ScanJob.result_summary).where(ScanJob.website_id == uuid.UUID(wid),
                                                                ScanJob.job_type == "log_scan")
                           .order_by(ScanJob.finished_at.desc()).limit(1)).scalar_one()
@@ -105,3 +109,44 @@ def test_web_shell_use_and_brute_force_found_in_logs(alice, sftp_server, sftp_ro
     rotated = _log_scan(sess, tid, wid)
     assert rotated["requests"] == 1 and "rotated" in rotated["files"][0]["note"]
     assert _log_incidents()["log:sensitive_file_exposed"].severity == "high"
+
+
+def test_cpanel_style_gzip_archives_are_analysed_incrementally(alice, sftp_server, sftp_root):
+    """Hosts that jail accounts make ~/access-logs unreachable; cPanel's daily archives in ~/logs are used."""
+    import gzip
+    import os
+    import time
+
+    sess, tid = alice
+    logdir = sftp_root / "logs"
+    logdir.mkdir()
+    archive = logdir / "www.alpha-site.com-ssl_log-Nov-2026.gz"
+    old = logdir / "www.alpha-site.com-ssl_log-Oct-2026.gz"
+    old.write_bytes(gzip.compress(_line("/.env", size=500).encode()))
+    os.utime(old, (time.time() - 40 * 86400, time.time() - 40 * 86400))  # previous month: not analysed
+    archive.write_bytes(gzip.compress("".join(_line(f"/p{i}") for i in range(10)).encode()))
+    acct = _connect_with_logs(sess, tid, sftp_server, ["/logs"])
+    cap = _cap(acct)
+    assert cap.status == "available" and "archive" in cap.detail
+    wid = _website(sess, tid, acct)
+    assert _log_scan(sess, tid, wid)["requests"] == 10
+    assert "log:sensitive_file_exposed" not in _log_incidents(), "last month's archive is skipped"
+
+    # The control panel rewrites the archive with the day's new lines appended.
+    time.sleep(1.1)
+    content = "".join(_line(f"/p{i}") for i in range(10)) + _line("/wp-config.php.bak", size=4000, ip="192.0.2.90")
+    archive.write_bytes(gzip.compress(content.encode()))
+    second = _log_scan(sess, tid, wid)
+    assert second["requests"] == 1, "only lines added since the last run"
+    assert _log_incidents()["log:sensitive_file_exposed"].severity == "high"
+    assert _log_scan(sess, tid, wid)["requests"] == 0, "unchanged archive is not downloaded again"
+
+
+def test_corrupt_archive_is_reported_not_trusted(alice, sftp_server, sftp_root):
+    sess, tid = alice
+    logdir = sftp_root / "logs"
+    logdir.mkdir()
+    (logdir / "www.alpha-site.com-ssl_log-Nov-2026.gz").write_bytes(b"\x1f\x8b\x08\x00garbage-not-gzip" * 10)
+    acct = _connect_with_logs(sess, tid, sftp_server, ["/logs"])
+    cap = _cap(acct)
+    assert cap.status == "unavailable" and "could not be decompressed" in cap.detail

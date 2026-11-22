@@ -71,8 +71,14 @@
   - **When it runs:** only where the hosting connection has *verified* log access. The connection test must
     read a real access log and recognise its format: combined or common format from Apache, LiteSpeed or
     nginx, with an optional virtual-host prefix.
-  - **Where it looks:** on cPanel, `~/access-logs` (cPanel's Raw Access Logs) is used unless log folders are
-    set on the connection; on SFTP, the configured log folders.
+  - **Where it looks:** on cPanel, `~/access-logs` (live logs) and `~/logs` (daily gzip archives) are tried
+    unless log folders are set on the connection; on SFTP, the configured log folders.
+  - **Hosts that jail accounts:** on hosts using CloudLinux CageFS (for example trustdata.ng's host),
+    `~/access-logs` points outside the account and the API cannot follow it. Only the archives in `~/logs`
+    work there, so findings arrive after the control panel's daily statistics run, not within the hour.
+    Turn on *Metrics → Raw Access → Archive logs in your home directory at the end of each stats run*.
+    Archives untouched for 7 days (previous months) are not analysed, and an unchanged archive is not
+    downloaded again.
   - **Which files:** only the website's own files, matched by host name (for example
     `example.com-ssl_log`). Compressed archives are skipped.
   - **How often:** hourly by default; set it in Website → Monitoring → Access-log analysis.

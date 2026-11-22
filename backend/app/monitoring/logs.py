@@ -218,21 +218,60 @@ def analyse(entries: list[LogEntry], ctx: Context) -> tuple[list[Finding], dict]
     return findings, stats
 
 
-def probe(src, directory: str) -> tuple[bool, str]:
-    """Verify log access for real: list the directory, read the end of an access log and recognise its format.
+MAX_ARCHIVE_BYTES = 50 * 1024 * 1024  # compressed size read in one go
+MAX_UNPACKED_BYTES = 500 * 1024 * 1024
 
-    ``src`` is a FileSource rooted at the log directory."""
+
+def is_archive(name: str) -> bool:
+    return name.lower().endswith(".gz")
+
+
+def read_archive(src, name: str, size: int | None) -> bytes:
+    """Whole decompressed content of a gzip log archive (cPanel's ~/logs). Raises ValueError if it cannot be
+    read exactly (too large, or bytes altered in transit so the archive is corrupt)."""
+    import zlib
+
+    if size is not None and size > MAX_ARCHIVE_BYTES:
+        raise ValueError(f"archive larger than {MAX_ARCHIVE_BYTES // (1024 * 1024)} MB")
+    raw = b"".join(src.read_chunks(name))
+    d = zlib.decompressobj(wbits=47)  # gzip or zlib header
+    try:
+        out = d.decompress(raw, MAX_UNPACKED_BYTES)
+    except zlib.error as exc:
+        raise ValueError(f"archive could not be decompressed ({exc}); the connection may not return exact bytes") from exc
+    if d.unconsumed_tail:
+        raise ValueError("archive expands beyond the analysis limit")
+    return out
+
+
+def probe(src, directory: str) -> tuple[bool, str]:
+    """Verify log access for real: list the directory, read an access log (plain or a gzip archive) and
+    recognise its format. ``src`` is a FileSource rooted at the log directory."""
     files = [e for e in src.list_dir("") if e.entry_type == "file" and not e.name.lower().endswith(
-        (".gz", ".bz2", ".zip", "-bytes_log")) and "error" not in e.name.lower() and (e.size or 0) > 0]
+        (".bz2", ".zip", "-bytes_log")) and "error" not in e.name.lower() and (e.size or 0) > 0]
     if not files:
-        return False, f"{directory}: no uncompressed access log found"
-    for f in sorted(files, key=lambda e: -(e.size or 0))[:3]:
+        return False, f"{directory}: no access log found"
+    plain = [f for f in files if not is_archive(f.name)]
+    archives = sorted((f for f in files if is_archive(f.name)), key=lambda e: e.mtime.timestamp() if e.mtime else 0.0, reverse=True)
+    problems = []
+    for f in archives[:2]:
+        try:
+            text = read_archive(src, f.name, f.size).decode("utf-8", "replace")
+        except ValueError as exc:
+            problems.append(f"{f.name}: {exc}")
+            continue
+        if parse("\n".join(text.splitlines()[-200:]))[0]:
+            return True, (f"{directory}: {len(files)} log file(s) readable, access-log format recognised in archive "
+                          f"{f.name} (archives are updated once a day by the control panel)")
+    for f in sorted(plain, key=lambda e: -(e.size or 0))[:3]:
         start = max(0, (f.size or 0) - 65536)
         sample = src.read_range(f.name, start, 65536).decode("utf-8", "replace")
         lines = sample.splitlines()[1:] if start else sample.splitlines()
         parsed, _ = parse("\n".join(lines[-200:]))
         if parsed:
             return True, f"{directory}: {len(files)} log file(s) readable, access-log format recognised ({f.name})"
+    if problems:
+        return False, f"{directory}: " + "; ".join(problems)
     return False, f"{directory}: files are readable but not in a recognised access-log format"
 
 
