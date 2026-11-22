@@ -168,9 +168,12 @@ def cmd_send_test_email(to: str) -> None:
     if not parseaddr(to)[1] or "@" not in to:
         sys.exit("FAILED: give a valid recipient address.")
     try:
-        message_id = send_email(to, f"{s.product_name}: test email",
-                                f"This is a test email from {s.product_name} ({s.public_base_url}).\n\n"
-                                "If you can read this, alert emails, password resets and invitations will be delivered.\n")
+        from app.services.email_templates import render_html
+
+        subject = f"{s.product_name}: test email"
+        body = (f"This is a test email from {s.product_name} ({s.public_base_url}).\n\n"
+                "If you can read this, alert emails, password resets and invitations will be delivered.\n")
+        message_id = send_email(to, subject, body, render_html(subject, body))
     except ProviderUnconfigured:
         sys.exit("FAILED: email is not configured (CW_SMTP_HOST is empty).")
     except DeliveryError as exc:

@@ -178,7 +178,13 @@ def render_incident(incident: Incident, website: Website | None, tenant: Tenant,
         f"{settings.product_name} does not guarantee detection of every threat.{demo}\n\n"
         f"— {settings.product_name}, {settings.company_name}"
     )
-    params = {"severity": sev, "title": incident.title[:60], "website": site[:60], "reference": incident.reference}
+    # Short keys feed the WhatsApp template; the rest renders the HTML email (email_templates.py).
+    params = {"severity": sev, "title": incident.title[:60], "website": site[:60], "reference": incident.reference,
+              "severity_key": incident.severity, "verb": verb, "title_full": incident.title, "tenant": tenant.name,
+              "website_full": f"{site} ({website.url})" if website else site,
+              "category": incident.category.replace("_", " ").capitalize(),
+              "detected": f"{incident.first_detected_at:%d %b %Y, %H:%M} UTC", "summary": incident.summary,
+              "action": incident.recommended_action, "link": link, "demo": bool(incident.is_demo or tenant.is_demo)}
     return subject, body, params
 
 
@@ -291,7 +297,7 @@ def _smtp_detail(exc: smtplib.SMTPResponseException) -> str:
     return f"{exc.smtp_code} {' '.join(reply.split())[:160]}"
 
 
-def send_email(to: str, subject: str, body: str) -> str:
+def send_email(to: str, subject: str, body: str, html_body: str | None = None) -> str:
     s = get_settings()
     if not s.smtp_host:
         raise ProviderUnconfigured("SMTP is not configured.")
@@ -304,6 +310,8 @@ def send_email(to: str, subject: str, body: str) -> str:
     sender_domain = parseaddr(s.email_from)[1].rpartition("@")[2] or None
     msg["Message-ID"] = make_msgid(domain=sender_domain)
     msg.set_content(body)
+    if html_body:
+        msg.add_alternative(html_body, subtype="html")  # plain text stays first: the complete fallback
     # Port 465 is implicit TLS; other ports use STARTTLS unless it is switched off.
     implicit_tls = s.smtp_port == 465
     try:
@@ -396,7 +404,10 @@ def deliver(db: Session, n: Notification) -> None:
     n.status = "sending"
     try:
         if n.channel == "email":
-            n.provider_message_id = send_email(n.recipient, n.subject, n.body)
+            from app.services.email_templates import render_html
+
+            n.provider_message_id = send_email(n.recipient, n.subject, n.body,
+                                               render_html(n.subject, n.body, n.template, n.params))
         elif n.channel == "whatsapp":
             name, lang, keys = WHATSAPP_TEMPLATES.get(n.template, WHATSAPP_TEMPLATES["test"])
             n.provider_message_id = send_whatsapp_template(
