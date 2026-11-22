@@ -7,6 +7,7 @@ import {
   Center,
   Code,
   CopyButton,
+  Anchor,
   Group,
   Modal,
   MultiSelect,
@@ -27,6 +28,7 @@ import { notifications } from "@mantine/notifications";
 import { IconShieldCheck } from "@tabler/icons-react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useState } from "react";
+import { Link } from "react-router-dom";
 import { useMe, useRefreshMe, useTenant, useTenantId, useCan } from "../../api/auth";
 import { api, errorMessage } from "../../api/client";
 import type { Page } from "../../api/types";
@@ -139,6 +141,12 @@ export function AccountSecurity() {
               <CopyButton value={codes.join("\n")}>{({ copied, copy }) => <Button size="xs" mt="xs" variant="light" onClick={copy}>{copied ? "Copied" : "Copy codes"}</Button>}</CopyButton>
             </Alert>
           )}
+        </Section>
+        <Section title="Your data" description="Download the personal data CyberWatch holds about you (profile, organisations, sign-in history, sessions, your actions). For corrections use Profile; for erasure, contact Trust Data.">
+          <Group>
+            <Button variant="light" component="a" href="/api/v1/auth/me/export" download>Download my data (JSON)</Button>
+            <Anchor component={Link} to="/privacy" size="sm">Privacy notice</Anchor>
+          </Group>
         </Section>
         <Section title="Change password">
           <Stack>

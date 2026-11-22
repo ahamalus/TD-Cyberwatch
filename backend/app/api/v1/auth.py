@@ -217,6 +217,23 @@ def me(principal: Principal = Depends(current_principal), db: Session = Depends(
     return build_me(db, principal.user)
 
 
+@router.get("/me/export")
+def export_my_data(principal: Principal = Depends(current_principal), db: Session = Depends(get_db)) -> Response:
+    """Data-subject access/portability: everything held about the signed-in person, as a JSON download."""
+    import json
+
+    from app.services import privacy
+
+    get_limiter().hit(f"export:{principal.user.id}", 5, 3600)
+    data = privacy.export_user_data(db, principal.user)
+    audit.record(db, "user.data_exported", actor=principal.actor(), target_type="user", target_id=principal.user.id)
+    db.commit()
+    body = json.dumps(data, indent=2, default=str)
+    return Response(body, media_type="application/json", headers={
+        "Content-Disposition": f'attachment; filename="cyberwatch-my-data-{utcnow():%Y%m%d}.json"',
+        "Cache-Control": "no-store"})
+
+
 @router.patch("/me", response_model=MeOut)
 def update_me(body: ProfileIn, principal: Principal = Depends(current_principal), db: Session = Depends(get_db)) -> MeOut:
     u = principal.user

@@ -220,8 +220,9 @@ export function LandingPage() {
               a connection has verified support. CyberWatch does not modify customer files without separately recorded authorisation.
             </Text>
           </SimpleGrid>
-          <Text size="xs" c="gray.6" mt="xl">
-            © {new Date().getFullYear()} Trust Data Compliance Ltd.
+          <Text size="xs" c="gray.5" mt="xl">
+            © {new Date().getFullYear()} Trust Data Compliance Ltd. ·{" "}
+            <Anchor component={Link} to="/privacy" c="gray.3" size="xs">Privacy notice</Anchor>
           </Text>
         </Container>
       </Box>

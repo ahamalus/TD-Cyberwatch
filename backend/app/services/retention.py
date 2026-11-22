@@ -11,15 +11,35 @@ from datetime import timedelta
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
+from app.core.config import get_settings
 from app.db.base import utcnow
-from app.models import AvailabilityCheck, FileChange, FileSnapshot, Notification, Tenant, TlsCheck, Website
+from app.models import (
+    AvailabilityCheck,
+    FileChange,
+    FileSnapshot,
+    LoginEvent,
+    Notification,
+    Tenant,
+    TlsCheck,
+    UserSession,
+    Website,
+)
 from app.services.entitlements import effective
 
 KEEP_RECENT_SNAPSHOTS = 5
 
 
 def run_retention(db: Session) -> dict[str, int]:
-    stats = {"snapshots": 0, "availability_checks": 0, "tls_checks": 0, "file_changes": 0, "notifications": 0}
+    stats = {"snapshots": 0, "availability_checks": 0, "tls_checks": 0, "file_changes": 0, "notifications": 0,
+             "login_events": 0, "sessions": 0}
+    # Personal data kept only as long as needed (NDPA storage limitation).
+    s = get_settings()
+    now = utcnow()
+    stats["login_events"] = db.execute(
+        delete(LoginEvent).where(LoginEvent.created_at < now - timedelta(days=s.login_history_days))).rowcount or 0
+    ended = now - timedelta(days=s.ended_session_days)
+    stats["sessions"] = db.execute(
+        delete(UserSession).where((UserSession.expires_at < ended) | (UserSession.revoked_at < ended))).rowcount or 0
     for tenant in db.execute(select(Tenant)).scalars():
         days = int(effective(db, tenant.id).get("retention_days", 30))
         cutoff = utcnow() - timedelta(days=max(days, 7))

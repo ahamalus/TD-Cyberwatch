@@ -212,7 +212,8 @@ export function RegisterPage() {
             Create account
           </Button>
           <Text size="xs" c="dimmed">
-            By creating an account you confirm you are authorised to monitor the websites and hosting accounts you connect.
+            By creating an account you confirm you are authorised to monitor the websites and hosting accounts you connect, and you
+            acknowledge our <Anchor component={Link} to="/privacy" size="xs">privacy notice</Anchor>.
           </Text>
         </Stack>
       </form>

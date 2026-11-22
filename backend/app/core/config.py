@@ -98,6 +98,10 @@ class Settings(BaseSettings):
     # that server administrators cannot alter. Nightly backups also store anchors (see services/audit_anchor.py).
     audit_anchor_emails: list[str] = Field(default_factory=list)
 
+    # Personal-data retention (NDPA storage limitation): sign-in history and ended sessions.
+    login_history_days: int = 365
+    ended_session_days: int = 30
+
     # Notifications
     smtp_host: str | None = None
     smtp_port: int = 587

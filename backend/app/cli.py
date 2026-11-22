@@ -12,6 +12,7 @@
     python -m app.cli health                    # PASS/FAIL report of workers, scheduler, queue, audit
     python -m app.cli send-test-email ADDRESS   # send one email now and explain any SMTP failure
     python -m app.cli rules-selftest            # run the YARA rules over official WordPress releases now
+    python -m app.cli anonymise-user EMAIL REASON...  # erasure request (NDPA): de-identify a user account
     python -m app.cli ensure-app-role           # create/repair the restricted runtime database login
                                                 # (CW_APP_DB_USER / CW_APP_DB_PASSWORD; run as the owner)
 """
@@ -370,6 +371,15 @@ def main(argv: list[str]) -> None:
         cmd_send_test_email(args[0])
     elif cmd == "ensure-app-role":
         cmd_ensure_app_role()
+    elif cmd == "anonymise-user" and len(args) >= 2:
+        from app.services import privacy
+        from app.services.audit import AuditActor
+
+        with platform_session() as db:
+            uid = privacy.anonymise_user(db, args[0], AuditActor(actor_type="system"), " ".join(args[1:]))
+            db.commit()
+        print(f"Anonymised user {uid}: profile, sign-in history, sessions and alert recipients removed; "
+              "audit entries keep only the random id.")
     elif cmd == "rules-selftest":
         from app.monitoring.selftest import run_selftest
 

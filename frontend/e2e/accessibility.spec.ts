@@ -22,7 +22,7 @@ test.describe.configure({ mode: "serial" });
 
 test("public pages have no WCAG A/AA violations", async ({ page }) => {
   const found: string[] = [];
-  for (const path of ["/", "/login", "/register", "/forgot-password"]) {
+  for (const path of ["/", "/login", "/register", "/forgot-password", "/privacy"]) {
     await page.goto(path);
     found.push(...(await scan(page, path)));
   }

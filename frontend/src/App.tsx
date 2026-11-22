@@ -57,6 +57,7 @@ const { OverviewPage } = lazyModule<typeof import("./pages/app/Overview")>(() =>
 const { AccountSecurity, SettingsPage } = lazyModule<typeof import("./pages/app/Settings")>(() => import("./pages/app/Settings"));
 const { NewWebsitePage, WebsiteDetailPage, WebsitesPage } = lazyModule<typeof import("./pages/app/Websites")>(() => import("./pages/app/Websites"));
 import { LandingPage } from "./pages/public/Landing";
+import { PrivacyPage } from "./pages/public/Privacy";
 
 function CustomerLayout() {
   const { tenantId } = useParams();
@@ -281,6 +282,7 @@ export function App() {
       <Route path="/verify-email" element={<VerifyEmailPage />} />
       <Route path="/invite" element={<AcceptInvitePage />} />
       <Route path="/help" element={<HelpPage />} />
+      <Route path="/privacy" element={<PrivacyPage />} />
       <Route path="/staff/security" element={<RequireAuth><StaffSecurityPage /></RequireAuth>} />
       <Route path="/app" element={<RequireAuth><AppEntryRedirect /></RequireAuth>} />
       <Route path="/app/:tenantId" element={<RequireAuth><CustomerLayout /></RequireAuth>}>
