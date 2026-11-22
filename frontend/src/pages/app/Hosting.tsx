@@ -275,6 +275,38 @@ export function NewHostingPage() {
   );
 }
 
+function LogDirectoriesSection({ account, canEdit, onSaved }: { account: HostingAccount; canEdit: boolean; onSaved: () => void }) {
+  const tid = useTenantId();
+  const [paths, setPaths] = useState<string[]>(account.log_paths);
+  const save = useMutation({
+    mutationFn: () => api.patch(`/tenants/${tid}/hosting-accounts/${account.id}`, { log_paths: paths }),
+    onSuccess: () => {
+      notifications.show({ color: "secure", title: "Log directories saved", message: "Run Test connection to verify log access." });
+      onSaved();
+    },
+    onError: (e) => notifications.show({ color: "threat", title: "Not saved", message: errorMessage(e) }),
+  });
+  if (account.connector_type !== "sftp" && account.connector_type !== "cpanel_uapi") return null;
+  const isCpanel = account.connector_type === "cpanel_uapi";
+  return (
+    <Section title="Log directories" description={isCpanel
+      ? "Where web server access logs are read. Leave empty to try cPanel's access-logs and logs folders."
+      : "Absolute paths to web server access logs on this server."}>
+      <Stack gap="xs">
+        <TagsInput aria-label="Log directories" placeholder={isCpanel ? "/access-logs, /logs (defaults)" : "/var/log/apache2"} value={paths}
+          onChange={setPaths} disabled={!canEdit} />
+        {canEdit && (
+          <Button size="xs" w="fit-content" onClick={() => save.mutate()} loading={save.isPending}
+            disabled={JSON.stringify(paths) === JSON.stringify(account.log_paths)}>
+            Save
+          </Button>
+        )}
+        <Text size="xs" c="dimmed">Access is verified by the connection test, never assumed.</Text>
+      </Stack>
+    </Section>
+  );
+}
+
 export function HostingDetailPage() {
   const tid = useTenantId();
   const { accountId } = useParams();
@@ -353,6 +385,7 @@ export function HostingDetailPage() {
                 ]}
               />
             </Section>
+            <LogDirectoriesSection account={h} canEdit={can("hosting:manage")} onSaved={() => q.refetch()} />
             <Section title="Latest diagnostics" description="Sanitised results of the most recent connection test.">
               {!job ? (
                 <Text size="sm" c="dimmed">
