@@ -732,11 +732,11 @@ function SnapshotsPanel({ site, onBaseline }: { site: Website; onBaseline: () =>
               <Text size="sm">
                 +{s.changes_added} ~{s.changes_modified} −{s.changes_deleted}
                 {s.changes_renamed ? ` ↻${s.changes_renamed}` : ""}
-                {s.deletions_unverified ? <Text span size="xs" c="amber.8"> · {s.deletions_unverified} unverified</Text> : null}
+                {s.deletions_unverified ? <Text span size="xs" c="var(--cw-light-text-amber)"> · {s.deletions_unverified} unverified</Text> : null}
               </Text>
             ),
           },
-          { key: "errors", header: "Errors", render: (s) => <Text size="sm" c={s.error_count ? "amber.8" : undefined}>{s.error_count}</Text>, visibleFrom: "md" },
+          { key: "errors", header: "Errors", render: (s) => <Text size="sm" c={s.error_count ? "var(--cw-light-text-amber)" : undefined}>{s.error_count}</Text>, visibleFrom: "md" },
           { key: "bytes", header: "Hashed", render: (s) => <Text size="sm">{fmtBytes(s.bytes_hashed)}</Text>, visibleFrom: "lg" },
           {
             key: "actions",

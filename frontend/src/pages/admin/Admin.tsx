@@ -274,7 +274,7 @@ export function ConnectorRegistryPage() {
             {c.status !== "planned" && (
               <KeyValue items={[["Timeouts", `${c.connect_timeout_seconds}s connect · ${c.io_timeout_seconds}s I/O`], ["Retries", c.max_retries], ["Min poll interval", `${c.min_poll_interval_minutes} min`], ["Accounts", Object.entries(c.accounts_by_status).map(([k, v]) => `${v} ${humanize(k).toLowerCase()}`).join(", ") || "none"], ["Job error rate (7d)", c.job_error_rate_7d === null ? "no data" : `${Math.round(c.job_error_rate_7d * 100)}%`]]} />
             )}
-            {c.notes?.limitations && <Text size="xs" c="amber.8" mt="xs">{c.notes.limitations}</Text>}
+            {c.notes?.limitations && <Text size="xs" c="var(--cw-light-text-amber)" mt="xs">{c.notes.limitations}</Text>}
             {can("platform:connectors:manage") && c.status !== "planned" && <Button mt="sm" size="xs" variant="light" onClick={() => setEdit({ ...c })}>Configure</Button>}
           </Card>
         ))}
@@ -372,7 +372,7 @@ export function PaymentsAdminPage() {
               rows={disputes.data?.items}
               rowKey={(d) => d.id}
               columns={[
-                { key: "due", header: "Respond by", render: (d) => <Text size="sm" c={d.due_at && new Date(d.due_at).getTime() - Date.now() < 2 * 864e5 ? "threat" : undefined}>{d.due_at ? fmtDateTime(d.due_at) : "Unknown"}</Text> },
+                { key: "due", header: "Respond by", render: (d) => <Text size="sm" c={d.due_at && new Date(d.due_at).getTime() - Date.now() < 2 * 864e5 ? "var(--cw-light-text-threat)" : undefined}>{d.due_at ? fmtDateTime(d.due_at) : "Unknown"}</Text> },
                 { key: "c", header: "Customer", render: (d) => <Text size="sm">{d.tenant ?? "Unmatched payment"}</Text> },
                 { key: "a", header: "Amount", render: (d) => <Text size="sm">{d.amount_minor ? fmtMoney(d.amount_minor, d.currency ?? "NGN") : "—"}</Text> },
                 { key: "s", header: "Status", render: (d) => <Badge color="amber" variant="light" styles={{ root: { textTransform: "none" } }}>{humanize(d.status)}{d.category ? ` · ${humanize(d.category)}` : ""}</Badge> },
@@ -639,7 +639,7 @@ export function AnalyticsPage() {
           <DataTable rows={d?.tenant_usage} loading={!d} rowKey={(r) => r.tenant} columns={[
             { key: "t", header: "Customer", render: (r) => <Text size="sm">{r.tenant}</Text> },
             { key: "p", header: "Plan", render: (r) => <Text size="sm">{r.plan}</Text> },
-            { key: "w", header: "Websites", render: (r) => <Text size="sm" c={r.over_limit ? "threat.6" : undefined}>{r.websites} / {r.limit}</Text> },
+            { key: "w", header: "Websites", render: (r) => <Text size="sm" c={r.over_limit ? "var(--cw-light-text-threat)" : undefined}>{r.websites} / {r.limit}</Text> },
           ]} />
         </Section>
       </SimpleGrid>

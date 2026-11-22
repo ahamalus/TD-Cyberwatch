@@ -22,6 +22,7 @@ import {
   Tooltip,
   UnstyledButton,
   useMantineColorScheme,
+  VisuallyHidden,
 } from "@mantine/core";
 import { useDisclosure, useLocalStorage } from "@mantine/hooks";
 import {
@@ -133,10 +134,11 @@ export function AppShellLayout({
             </Tooltip>
             <Menu position="bottom-end" width={240} shadow="md">
               <Menu.Target>
-                <UnstyledButton aria-label="Account menu">
+                <UnstyledButton>
                   <Avatar color="cyber" radius="xl" size={34}>
                     {(me.data?.full_name || me.data?.email || "?").slice(0, 2).toUpperCase()}
                   </Avatar>
+                  <VisuallyHidden>Account menu</VisuallyHidden>
                 </UnstyledButton>
               </Menu.Target>
               <Menu.Dropdown>
@@ -182,7 +184,7 @@ export function AppShellLayout({
       <AppShell.Navbar style={{ background: "var(--cw-sidebar-bg)", borderColor: "var(--cw-line)" }}>
         <AppShell.Section p="md" pb="xs">
           <Group justify="space-between" wrap="nowrap">
-            <Link to="/" style={{ textDecoration: "none", color: "inherit" }} aria-label="CyberWatch home">
+            <Link to="/" style={{ textDecoration: "none", color: "inherit" }}>
               <Wordmark compact={collapsed} />
             </Link>
           </Group>

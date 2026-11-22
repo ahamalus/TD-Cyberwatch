@@ -111,7 +111,7 @@ export function HostingListPage() {
                 Last successful connection: {fmtRelative(h.last_success_at)}
               </Text>
               {h.last_error_message && h.status !== "connected" && (
-                <Text size="xs" c="threat.6" mt={4} lineClamp={2}>
+                <Text size="xs" c="var(--cw-light-text-threat)" mt={4} lineClamp={2}>
                   {h.last_error_message}
                 </Text>
               )}
@@ -416,7 +416,7 @@ export function HostingDetailPage() {
                         {c.detail}
                       </Text>
                       {c.required_permission && c.status !== "available" && (
-                        <Text size="xs" c="amber.8" mt={2}>
+                        <Text size="xs" c="var(--cw-light-text-amber)" mt={2}>
                           Needs: {c.required_permission}
                         </Text>
                       )}

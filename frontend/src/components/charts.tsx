@@ -98,7 +98,7 @@ export function StackedBars({
           </ResponsiveContainer>
         </Box>
       ) : (
-        <div className="cw-table-scroll">
+        <div className="cw-table-scroll" tabIndex={0} role="region" aria-label="Chart data table">
           <Table fz="xs">
             <Table.Thead>
               <Table.Tr>

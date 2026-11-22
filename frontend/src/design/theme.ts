@@ -1,11 +1,24 @@
-import { createTheme, type MantineColorsTuple, rem } from "@mantine/core";
+import { createTheme, defaultVariantColorsResolver, type MantineColorsTuple, parseThemeColor, rem, type VariantColorsResolver } from "@mantine/core";
 import { scales } from "./tokens";
 
 const tuple = (s: readonly string[]) => [...s] as unknown as MantineColorsTuple;
 
+const LIGHT_TEXT = new Set(["cyber", "secure", "amber", "threat", "info", "navy", "gray"]);
+
+/** "light" variants (badges, alerts, buttons) use a darker text shade per colour scheme, for WCAG AA contrast. */
+const variantColorResolver: VariantColorsResolver = (input) => {
+  const base = defaultVariantColorsResolver(input);
+  if (input.variant !== "light") return base;
+  const parsed = parseThemeColor({ color: input.color || input.theme.primaryColor, theme: input.theme });
+  if (parsed.isThemeColor && LIGHT_TEXT.has(parsed.color)) return { ...base, color: `var(--cw-light-text-${parsed.color})` };
+  return base;
+};
+
 export const theme = createTheme({
+  variantColorResolver,
   primaryColor: "cyber",
-  primaryShade: { light: 6, dark: 5 },
+  // Shade 7 (#0F63DB): white text on filled buttons and blue link text meet WCAG AA (>= 4.5:1).
+  primaryShade: { light: 7, dark: 7 },
   colors: {
     cyber: tuple(scales.cyber),
     navy: tuple(scales.navy),
@@ -42,6 +55,8 @@ export const theme = createTheme({
   respectReducedMotion: true,
   cursorType: "pointer",
   components: {
+    // Links are underlined so they are not distinguished by colour alone (WCAG 1.4.1).
+    Anchor: { defaultProps: { underline: "always" } },
     Card: { defaultProps: { withBorder: true, radius: "md", padding: "lg", shadow: "xs" } },
     Paper: { defaultProps: { radius: "md" } },
     Button: { defaultProps: { radius: "md" } },

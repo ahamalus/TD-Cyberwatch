@@ -77,7 +77,7 @@ export function OpsOverviewPage() {
               {d && <Stack gap={6}>{Object.entries(d.new_findings_24h).map(([s, n]) => <Group key={s} justify="space-between"><SeverityBadge severity={s} /><Text fw={600}>{n as number}</Text></Group>)}</Stack>}
             </Section>
             <Section title="Queues">
-              {d && (Object.keys(d.queues).length ? <KeyValue items={Object.entries(d.queues).map(([q, n]) => [q, `${n} waiting`])} /> : <Text size="sm" c="threat.4">Queue depth unavailable (Redis unreachable).</Text>)}
+              {d && (Object.keys(d.queues).length ? <KeyValue items={Object.entries(d.queues).map(([q, n]) => [q, `${n} waiting`])} /> : <Text size="sm" c="var(--cw-light-text-threat)">Queue depth unavailable (Redis unreachable).</Text>)}
               {d && <Text size="xs" c="dimmed" mt="xs">Notification failures (24h): {d.notification_failures_24h}</Text>}
             </Section>
           </Stack>
@@ -300,7 +300,7 @@ export function WorkerHealthPage() {
         </Section>
         <MalwareScannerSection scanner={d.malware_scanner} />
         <Section title="Backups">
-          {d.backup ? <KeyValue items={[["Status", <HealthBadge key="b" state={d.backup.status === "ok" ? "healthy" : "failed"} />], ["Reported", fmtDateTime(d.backup.reported_at)], ["Location", d.backup.location]]} /> : <Text size="sm" c="amber.5">No backup has been reported.</Text>}
+          {d.backup ? <KeyValue items={[["Status", <HealthBadge key="b" state={d.backup.status === "ok" ? "healthy" : "failed"} />], ["Reported", fmtDateTime(d.backup.reported_at)], ["Location", d.backup.location]]} /> : <Text size="sm" c="var(--cw-light-text-amber)">No backup has been reported.</Text>}
         </Section>
         <Section title="Job latency and durations (24h)">
           <KeyValue items={[["Avg queue wait", d.avg_queue_latency_seconds === null ? "—" : `${d.avg_queue_latency_seconds}s`], ...Object.entries(d.avg_duration_seconds_by_type).map(([k, v]: [string, any]) => [humanize(k), `${v.avg}s avg · ${v.count} jobs`] as [string, string])]} />

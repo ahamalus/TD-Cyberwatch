@@ -149,7 +149,7 @@ function ChangesTable({ websiteId }: { websiteId: string | null }) {
               </Box>
             ),
           },
-          { key: "change", header: "Change", render: (c) => <Text size="sm">{humanize(c.change_type)}{c.confidence === "low" ? <Text span size="xs" c="amber.8"> (low confidence)</Text> : null}</Text> },
+          { key: "change", header: "Change", render: (c) => <Text size="sm">{humanize(c.change_type)}{c.confidence === "low" ? <Text span size="xs" c="var(--cw-light-text-amber)"> (low confidence)</Text> : null}</Text> },
           { key: "website", header: "Website", render: (c) => <Text size="sm">{c.website_name}</Text>, visibleFrom: "md" },
           { key: "hash", header: "Hash", render: (c) => <Tooltip label={`${c.old_sha256 ?? "—"} → ${c.new_sha256 ?? "—"}`}><Text size="xs" className="cw-mono">{shortHash(c.new_sha256 ?? c.old_sha256)}</Text></Tooltip>, visibleFrom: "lg" },
           { key: "detected", header: "Detected", render: (c) => <Tooltip label={fmtDateTime(c.detected_at)}><Text size="sm">{fmtRelative(c.detected_at)}</Text></Tooltip> },

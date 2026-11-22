@@ -56,7 +56,7 @@ export function Wordmark({ compact = false, inverted = false }: { compact?: bool
       {!compact && (
         <Box lh={1.1}>
           <Text fw={700} size="md" c={inverted ? "white" : undefined}>
-            <Text span inherit c="cyber.6">TrustData</Text> CyberWatch
+            <Text span inherit c={inverted ? "cyber.3" : "var(--cw-wordmark-accent)"}>TrustData</Text> CyberWatch
           </Text>
           <Text size="10px" c={inverted ? "gray.4" : "dimmed"} tt="uppercase" fw={600} style={{ letterSpacing: 0.6 }}>
             Trust Data Compliance Ltd
@@ -183,7 +183,7 @@ export function StatCard({
       )}
       <Group gap={6} mt={6} wrap="nowrap">
         {trend && (
-          <Text size="xs" c={trend.good ? "secure.7" : "threat.6"} fw={600} style={{ display: "flex", alignItems: "center" }}>
+          <Text size="xs" c={trend.good ? "var(--cw-light-text-secure)" : "var(--cw-light-text-threat)"} fw={600} style={{ display: "flex", alignItems: "center" }}>
             {trend.direction === "up" ? <IconArrowUpRight size={14} /> : <IconArrowDownRight size={14} />}
             {trend.text}
           </Text>
@@ -195,14 +195,14 @@ export function StatCard({
         )}
       </Group>
       {to && (
-        <Text size="xs" c="cyber.6" fw={600} mt="sm">
+        <Text size="xs" c="var(--cw-light-text-cyber)" fw={600} mt="sm">
           View details →
         </Text>
       )}
     </Card>
   );
   return to ? (
-    <UnstyledButton component={Link} to={to} style={{ display: "block", height: "100%" }} aria-label={`${label}: view details`}>
+    <UnstyledButton component={Link} to={to} style={{ display: "block", height: "100%" }}>
       {body}
     </UnstyledButton>
   ) : (
@@ -357,7 +357,8 @@ export function DataTable<T>({
   const pages = total && pageSize ? Math.max(1, Math.ceil(total / pageSize)) : 1;
   return (
     <Stack gap="sm">
-      <div className="cw-table-scroll">
+      {/* Focusable so keyboard users can scroll wide tables (WCAG 2.1.1). */}
+      <div className="cw-table-scroll" tabIndex={0} role="region" aria-label={caption ?? "Table"}>
         <Table highlightOnHover={!!onRowClick} striped={false} miw={560}>
           {caption && <Table.Caption>{caption}</Table.Caption>}
           <Table.Thead>

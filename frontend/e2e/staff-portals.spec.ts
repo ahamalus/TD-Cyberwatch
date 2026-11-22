@@ -1,4 +1,5 @@
 import { createHmac } from "node:crypto";
+import AxeBuilder from "@axe-core/playwright";
 import { expect, type Page, test } from "@playwright/test";
 
 /**
@@ -67,6 +68,7 @@ test("every administration and operations page renders in its own portal", async
   await expect(page).toHaveURL(/\/admin/);
   // Walk exactly what each portal's menu offers this role: every entry must load, in its own portal.
   let visited = 0;
+  const a11y: string[] = [];
   for (const portal of ["admin", "ops"]) {
     await page.goto(`/${portal}/overview`);
     const nav = page.getByRole("navigation", { name: `${portal} navigation` });
@@ -79,9 +81,13 @@ test("every administration and operations page renders in its own portal", async
       await expect(page, `${href} stays in the ${portal} portal`).toHaveURL(new RegExp(`/${portal}/`));
       await expect(page.getByText(/something went wrong|could not be loaded|not authorised|do not have permission/i),
         `${href} loads its data`).toHaveCount(0);
+      await page.waitForLoadState("networkidle");
+      const scan = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"]).analyze();
+      a11y.push(...scan.violations.map((v) => `${href}: [${v.impact}] ${v.id} - ${v.help} (${v.nodes.slice(0, 3).map((n) => n.target.join(" ")).join(" | ")})`));
       visited++;
     }
   }
   expect(visited).toBeGreaterThan(15);
+  expect(a11y, `WCAG A/AA violations:\n${a11y.join("\n")}`).toEqual([]);
   expect(errors).toEqual([]);
 });

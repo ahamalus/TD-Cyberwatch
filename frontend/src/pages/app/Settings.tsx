@@ -209,7 +209,7 @@ function MfaRequirementSection() {
         <Switch label="Require MFA for every member" checked={required} disabled={!can("tenant:manage") || set.isPending || (!required && selfMissing)}
           onChange={(e) => set.mutate(e.currentTarget.checked)} />
         {!required && selfMissing && can("tenant:manage") && <Text size="xs" c="dimmed">Enable MFA on your own account first (Security tab), so the requirement cannot lock you out.</Text>}
-        {members.data && <Text size="sm" c={without ? "amber.8" : "dimmed"}>{without ? `${without} active member(s) have not enabled MFA yet.` : "Every active member uses MFA."}</Text>}
+        {members.data && <Text size="sm" c={without ? "var(--cw-light-text-amber)" : "dimmed"}>{without ? `${without} active member(s) have not enabled MFA yet.` : "Every active member uses MFA."}</Text>}
       </Stack>
     </Section>
   );
