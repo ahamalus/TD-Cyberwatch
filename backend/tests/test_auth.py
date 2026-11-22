@@ -86,7 +86,9 @@ def test_mfa_enrolment_and_login():
     assert c.get("/api/v1/auth/me").status_code == 401
     s2 = Session(c)
     assert s2.post("/api/v1/auth/mfa/verify", json={"code": "123456"}).status_code == 401
-    assert s2.post("/api/v1/auth/mfa/verify", json={"code": pyotp.TOTP(enrol["secret"]).now()}).status_code == 200
+    # The enrolment code was consumed; the next code (still within the accepted window) works.
+    assert s2.post("/api/v1/auth/mfa/verify", json={"code": pyotp.TOTP(enrol["secret"]).now()}).status_code == 401
+    assert s2.post("/api/v1/auth/mfa/verify", json={"code": _next_code(enrol["secret"])}).status_code == 200
     assert c.get("/api/v1/auth/me").status_code == 200
     # Recovery code works once
     c3 = _client()
@@ -154,3 +156,72 @@ def test_change_password_revokes_other_sessions():
     assert r.status_code == 200
     assert s.get("/api/v1/auth/me").status_code == 200
     assert other.get("/api/v1/auth/me").status_code == 401
+
+
+def _next_code(secret: str) -> str:
+    import time
+
+    return pyotp.TOTP(secret).at(time.time() + 30)
+
+
+def _enrol(s) -> str:
+    secret = s.post("/api/v1/auth/mfa/enroll").json()["secret"]
+    assert s.post("/api/v1/auth/mfa/enroll/confirm", json={"code": pyotp.TOTP(secret).now()}).status_code == 200
+    return secret
+
+
+def test_totp_code_cannot_be_replayed():
+    s, _ = register_and_login("replay@x.example.com", "Replay Org")
+    secret = _enrol(s)
+    code = _next_code(secret)
+    first, second = _client(), _client()
+    for c in (first, second):
+        assert c.post("/api/v1/auth/login", json={"email": "replay@x.example.com", "password": PASSWORD}).json()["mfa_required"]
+    assert Session(first).post("/api/v1/auth/mfa/verify", json={"code": code}).status_code == 200
+    # An observed code is useless to an attacker who also knows the password.
+    assert Session(second).post("/api/v1/auth/mfa/verify", json={"code": code}).status_code == 401
+
+
+def test_organisation_can_require_mfa_for_every_member():
+    from app.models import Notification
+
+    owner, tid = register_and_login("owner@mfaorg.example.com", "MFA Required Org")
+    # Not before the owner has MFA: that would lock them out.
+    r = owner.patch(f"/api/v1/tenants/{tid}", json={"require_mfa": True})
+    assert r.status_code == 422 and r.json()["error"]["code"] == "mfa_enrolment_required"
+
+    inv = owner.post(f"/api/v1/tenants/{tid}/invitations", json={"email": "member@mfaorg.example.com", "role": "analyst"})
+    assert inv.status_code == 201, inv.text
+    from app.core.security import new_token, token_digest
+    from app.models import Invitation
+
+    tok = new_token()
+    with platform_session() as db:
+        db.execute(select(Invitation).where(Invitation.email == "member@mfaorg.example.com")).scalar_one().token_digest = token_digest(tok)
+        db.commit()
+    member, _ = register_and_login("member@mfaorg.example.com", "Member Own Org")
+    assert member.post("/api/v1/invitations/accept", json={"token": tok}).status_code == 200
+    assert member.get(f"/api/v1/tenants/{tid}/websites").status_code == 200
+
+    _enrol(owner)
+    r = owner.patch(f"/api/v1/tenants/{tid}", json={"require_mfa": True})
+    assert r.status_code == 200 and r.json()["require_mfa"] is True
+    with platform_session() as db:
+        mails = db.execute(select(Notification).where(Notification.recipient == "member@mfaorg.example.com",
+                                                      Notification.subject.like("%requires multi-factor%"))).scalars().all()
+    assert len(mails) == 1
+
+    blocked = member.get(f"/api/v1/tenants/{tid}/websites")
+    assert blocked.status_code == 403 and blocked.json()["error"]["code"] == "tenant_mfa_required"
+    me = member.get("/api/v1/auth/me").json()
+    flags = {m["tenant_id"]: m["mfa_required"] for m in me["memberships"]}
+    assert flags[str(tid)] is True and list(flags.values()).count(True) == 1, "only the requiring organisation"
+    assert owner.get(f"/api/v1/tenants/{tid}/websites").status_code == 200
+
+    _enrol(member)
+    assert member.get(f"/api/v1/tenants/{tid}/websites").status_code == 200
+    with platform_session() as db:
+        from app.models import AuditEvent
+
+        ev = db.execute(select(AuditEvent).where(AuditEvent.action == "tenant.mfa_requirement_changed")).scalar_one()
+        assert ev.details == {"require_mfa": True, "members_without_mfa": 1}

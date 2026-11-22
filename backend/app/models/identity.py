@@ -4,6 +4,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     CheckConstraint,
     DateTime,
@@ -38,6 +39,8 @@ class User(UUIDPk, Timestamps, Base):
     mfa_nonce: Mapped[bytes | None] = mapped_column(LargeBinary)
     mfa_ciphertext: Mapped[bytes | None] = mapped_column(LargeBinary)
     mfa_recovery_digests: Mapped[list[str]] = mapped_column(ARRAY(String(64)), default=list, nullable=False)
+    # Time step of the last accepted TOTP code: each code works once (no replay within its window).
+    mfa_last_step: Mapped[int | None] = mapped_column(BigInteger)
 
     failed_login_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

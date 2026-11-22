@@ -14,6 +14,8 @@ export interface Membership {
   is_demo: boolean;
   role: string;
   permissions: string[];
+  /** The organisation requires MFA and this user has not enabled it yet. */
+  mfa_required?: boolean;
 }
 
 export interface Me {
@@ -47,6 +49,7 @@ export interface Tenant {
   permissions: string[];
   via_managed_service_grant: boolean;
   read_only: boolean;
+  require_mfa?: boolean;
   entitlements: Record<string, number | boolean | string>;
   usage: { websites: number; hosting_accounts: number; users: number };
   plan: { key: string | null; name: string | null; status: string | null; in_service: boolean };

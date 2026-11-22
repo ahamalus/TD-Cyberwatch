@@ -213,6 +213,10 @@ def tenant_context(
     if ctx is None:
         raise NotFound("Organisation not found.")
 
+    if (tenant.settings or {}).get("require_mfa") and ctx.grant is None and not principal.user.mfa_enabled:
+        # The organisation requires MFA for every member; enrolment happens under /auth, outside the tenant.
+        raise Forbidden("This organisation requires multi-factor authentication. Set it up in Account security "
+                        "to continue.", code="tenant_mfa_required")
     if tenant.status == "deactivated" and ctx.grant is None:
         raise Forbidden("This organisation has been deactivated.", code="tenant_deactivated")
     if tenant.status != "active":

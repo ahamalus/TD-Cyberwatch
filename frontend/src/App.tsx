@@ -33,7 +33,7 @@ import { Link, Navigate, Route, Routes, useParams } from "react-router-dom";
 import { RequireAuth, useMe, usePlatformCan, useTenant } from "./api/auth";
 import { DemoBanner, ErrorState, PageHeader, Wordmark } from "./components/ui";
 import { AppShellLayout, type NavGroup, TenantSwitcher } from "./layouts/AppShellLayout";
-import { Suspense } from "react";
+import { Suspense, useEffect } from "react";
 import { lazyModule } from "./lazyModule";
 import {
   AcceptInvitePage,
@@ -61,9 +61,25 @@ import { LandingPage } from "./pages/public/Landing";
 function CustomerLayout() {
   const { tenantId } = useParams();
   const tenant = useTenant();
+  const me = useMe();
   const base = `/app/${tenantId}`;
   const perms = new Set(tenant.data?.permissions ?? []);
   const can = (p: string) => perms.has(p);
+  const membership = me.data?.memberships.find((m) => m.tenant_id === tenantId);
+  const mfaGate = !!membership?.mfa_required;
+  const refetchTenant = tenant.refetch;
+  useEffect(() => {
+    if (!mfaGate && membership) void refetchTenant();
+  }, [mfaGate, membership, refetchTenant]);
+  if (mfaGate) {
+    return (
+      <Container size="lg" py="xl">
+        <Box mb="lg"><Wordmark /></Box>
+        <PageHeader title="Set up multi-factor authentication" description={`${membership?.tenant_name} requires every member to use an authenticator app. Set it up below to continue to the organisation.`} />
+        <AccountSecurity />
+      </Container>
+    );
+  }
   if (tenant.error) {
     return (
       <Container py="xl">

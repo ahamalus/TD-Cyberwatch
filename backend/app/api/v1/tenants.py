@@ -55,6 +55,7 @@ class TenantOut(BaseModel):
     entitlements: dict
     usage: dict
     plan: dict
+    require_mfa: bool = False
 
 
 class TenantPatch(BaseModel):
@@ -63,6 +64,8 @@ class TenantPatch(BaseModel):
     contact_email: EmailStr | None = None
     contact_phone: str | None = Field(default=None, pattern=r"^\+[1-9]\d{7,14}$")
     timezone: str | None = Field(default=None, max_length=64)
+    # Every member must use multi-factor authentication to access this organisation.
+    require_mfa: bool | None = None
 
 
 def tenant_out(db: Session, ctx: TenantContext) -> TenantOut:
@@ -76,6 +79,7 @@ def tenant_out(db: Session, ctx: TenantContext) -> TenantOut:
         entitlements=ent.limits, usage=entitlements.usage(db, t.id),
         plan={"key": ent.plan_key, "name": ent.plan_name, "status": ent.subscription_status,
               "in_service": ent.in_service},
+        require_mfa=bool((t.settings or {}).get("require_mfa")),
     )
 
 
@@ -88,6 +92,9 @@ def get_tenant(ctx: TenantContext = Depends(require(P.TENANT_READ)), db: Session
 def patch_tenant(body: TenantPatch, ctx: TenantContext = Depends(require(P.TENANT_MANAGE)),
                  db: Session = Depends(get_db)) -> TenantOut:
     changes = body.model_dump(exclude_none=True)
+    require_mfa = changes.pop("require_mfa", None)
+    if require_mfa is not None and require_mfa != bool((ctx.tenant.settings or {}).get("require_mfa")):
+        _set_mfa_requirement(db, ctx, require_mfa)
     if "timezone" in changes:
         from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -101,6 +108,33 @@ def patch_tenant(body: TenantPatch, ctx: TenantContext = Depends(require(P.TENAN
                  target_id=ctx.tenant_id, details={"fields": sorted(changes)})
     db.commit()
     return tenant_out(db, ctx)
+
+
+def _set_mfa_requirement(db: Session, ctx: TenantContext, required: bool) -> None:
+    if required and not ctx.principal.user.mfa_enabled:
+        raise ValidationFailed("Enable multi-factor authentication on your own account first (Account security), "
+                               "so the requirement cannot lock you out.", code="mfa_enrolment_required")
+    ctx.tenant.settings = {**(ctx.tenant.settings or {}), "require_mfa": required}
+    pending = db.execute(
+        select(User).join(TenantMembership, TenantMembership.user_id == User.id).where(
+            TenantMembership.tenant_id == ctx.tenant_id, TenantMembership.status == "active",
+            User.mfa_enabled.is_(False))
+    ).scalars().all()
+    audit.record(db, "tenant.mfa_requirement_changed", actor=ctx.actor(), tenant_id=ctx.tenant_id,
+                 target_type="tenant", target_id=ctx.tenant_id,
+                 details={"require_mfa": required, "members_without_mfa": len(pending)})
+    if required:
+        from app.core.config import get_settings
+        from app.services.notifications import queue_simple
+
+        base = get_settings().public_base_url.rstrip("/")
+        for u in pending:
+            queue_simple(db, tenant_id=ctx.tenant_id, channel="email", recipient=u.email, category="account",
+                         subject=f"{ctx.tenant.name} now requires multi-factor authentication",
+                         body=(f"{ctx.tenant.name} now requires every member to use multi-factor authentication. "
+                               f"Sign in and set it up under Account security ({base}/account/security) to keep "
+                               "access to the organisation's monitoring."),
+                         idempotency_key=f"tenant_mfa:{ctx.tenant_id}:{u.id}:{utcnow():%Y%m%d}")
 
 
 # ---------------------------------------------------------------- members

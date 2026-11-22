@@ -185,6 +185,36 @@ export function AccountSecurity() {
   );
 }
 
+function MfaRequirementSection() {
+  const tid = useTenantId();
+  const tenant = useTenant();
+  const can = useCan();
+  const me = useMe();
+  const members = useQuery({
+    queryKey: ["members", tid],
+    queryFn: () => api.get<{ user_id: string; status: string; mfa_enabled: boolean }[]>(`/tenants/${tid}/members`),
+    enabled: can("members:read"),
+  });
+  const set = useMutation({
+    mutationFn: (require_mfa: boolean) => api.patch(`/tenants/${tid}`, { require_mfa }),
+    onSuccess: (_, v) => { ok(v ? "Multi-factor authentication is now required for every member." : "The MFA requirement was removed."); tenant.refetch(); members.refetch(); },
+    onError,
+  });
+  const required = !!tenant.data?.require_mfa;
+  const without = (members.data ?? []).filter((m) => m.status === "active" && !m.mfa_enabled).length;
+  const selfMissing = !me.data?.mfa_enabled;
+  return (
+    <Section title="Multi-factor authentication" description="Require every member to use an authenticator app. Members without it can only set it up until they do; they are emailed when you turn this on.">
+      <Stack>
+        <Switch label="Require MFA for every member" checked={required} disabled={!can("tenant:manage") || set.isPending || (!required && selfMissing)}
+          onChange={(e) => set.mutate(e.currentTarget.checked)} />
+        {!required && selfMissing && can("tenant:manage") && <Text size="xs" c="dimmed">Enable MFA on your own account first (Security tab), so the requirement cannot lock you out.</Text>}
+        {members.data && <Text size="sm" c={without ? "amber.8" : "dimmed"}>{without ? `${without} active member(s) have not enabled MFA yet.` : "Every active member uses MFA."}</Text>}
+      </Stack>
+    </Section>
+  );
+}
+
 function OrganisationPanel() {
   const tid = useTenantId();
   const tenant = useTenant();
@@ -210,6 +240,7 @@ function OrganisationPanel() {
           {!disabled && <Button w="fit-content" onClick={() => save.mutate()} loading={save.isPending}>Save</Button>}
         </Stack>
       </Section>
+      <MfaRequirementSection />
       <Section title="Website groups" description="Group websites by business unit, environment or client.">
         <Stack>
           {groups.data?.length === 0 && <Text size="sm" c="dimmed">No groups yet.</Text>}

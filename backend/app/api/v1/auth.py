@@ -85,6 +85,8 @@ class MembershipOut(BaseModel):
     is_demo: bool
     role: str
     permissions: list[str]
+    # The organisation requires MFA and this user has not enabled it: only enrolment is possible.
+    mfa_required: bool = False
 
 
 class MeOut(BaseModel):
@@ -132,6 +134,7 @@ def build_me(db: Session, user: User) -> MeOut:
         MembershipOut(
             tenant_id=t.id, tenant_name=t.name, tenant_status=t.status, is_demo=t.is_demo, role=m.role_key,
             permissions=sorted(role_permissions(db, m.role_key)),
+            mfa_required=bool((t.settings or {}).get("require_mfa")) and not user.mfa_enabled,
         )
         for m, t in rows
     ]

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import secrets
+from datetime import UTC, datetime
 
 import pyotp
 from argon2 import PasswordHasher
@@ -69,11 +70,24 @@ def totp_uri(secret: str, account: str, issuer: str) -> str:
     return pyotp.TOTP(secret).provisioning_uri(name=account, issuer_name=issuer)
 
 
-def verify_totp(secret: str, code: str) -> bool:
+def totp_step(secret: str, code: str, after_step: int | None = None) -> int | None:
+    """Time step (30 s counter) a TOTP code belongs to, within one step of now, or None.
+
+    Codes are single-use: pass the last accepted step as ``after_step`` and any code from that step or
+    earlier is refused, so an observed code cannot be replayed within its validity window."""
     code = (code or "").strip().replace(" ", "")
     if not code.isdigit() or len(code) != 6:
-        return False
-    return pyotp.TOTP(secret).verify(code, valid_window=1)
+        return None
+    totp = pyotp.TOTP(secret)
+    now = totp.timecode(datetime.now(UTC))
+    for step in (now - 1, now, now + 1):
+        if (after_step is None or step > after_step) and hmac.compare_digest(totp.generate_otp(step), code):
+            return step
+    return None
+
+
+def verify_totp(secret: str, code: str) -> bool:
+    return totp_step(secret, code) is not None
 
 
 def new_recovery_codes(n: int = 8) -> list[str]:

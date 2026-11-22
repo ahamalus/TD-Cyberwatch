@@ -195,12 +195,21 @@ def _mfa_secret(user: User, vault: CredentialVault) -> str:
     return vault.decrypt(blob, CredentialVault.associated_data("user", user.id, "totp")).decode()
 
 
-def complete_mfa(db: Session, sess: UserSession, user: User, code: str, ip: str | None) -> None:
-    ok = False
+def _accept_totp(db: Session, user: User, code: str) -> bool:
+    """Check a TOTP code and consume its time step, so it cannot be used again."""
+    db.refresh(user, with_for_update=True)  # serialise concurrent attempts with the same code
     try:
-        ok = security.verify_totp(_mfa_secret(user, get_vault()), code)
+        step = security.totp_step(_mfa_secret(user, get_vault()), code, after_step=user.mfa_last_step)
     except AppError:
-        ok = False
+        return False
+    if step is None:
+        return False
+    user.mfa_last_step = step
+    return True
+
+
+def complete_mfa(db: Session, sess: UserSession, user: User, code: str, ip: str | None) -> None:
+    ok = _accept_totp(db, user, code)
     if not ok:
         digest = security.token_digest((code or "").strip().lower())
         if digest in (user.mfa_recovery_digests or []):
@@ -222,12 +231,13 @@ def begin_mfa_enrolment(db: Session, user: User) -> tuple[str, str]:
     vault = get_vault()
     blob = vault.encrypt(secret.encode(), CredentialVault.associated_data("user", user.id, "totp"))
     user.mfa_key_id, user.mfa_nonce, user.mfa_ciphertext = blob.key_id, blob.nonce, blob.ciphertext
+    user.mfa_last_step = None
     settings = get_settings()
     return secret, security.totp_uri(secret, user.email, settings.product_name)
 
 
 def confirm_mfa_enrolment(db: Session, user: User, code: str) -> list[str]:
-    if not security.verify_totp(_mfa_secret(user, get_vault()), code):
+    if not _accept_totp(db, user, code):
         raise ValidationFailed("The verification code is not valid.", code="invalid_mfa_code")
     codes = security.new_recovery_codes()
     user.mfa_enabled = True
@@ -244,6 +254,7 @@ def disable_mfa(db: Session, user: User, password: str) -> None:
         raise AppError("MFA is mandatory for platform staff.", code="mfa_required")
     user.mfa_enabled = False
     user.mfa_key_id = user.mfa_nonce = user.mfa_ciphertext = None
+    user.mfa_last_step = None
     user.mfa_recovery_digests = []
     audit.record(db, "auth.mfa_disabled", actor=AuditActor(user_id=user.id, actor_type="user"),
                  target_type="user", target_id=user.id)
