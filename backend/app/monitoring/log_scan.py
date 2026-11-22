@@ -34,10 +34,7 @@ from app.services import incidents as incident_svc
 from app.services.incidents import DetectionSpec, EvidenceSpec
 
 # Where the hosting control panel keeps raw access logs when none are configured (relative to the account).
-# cPanel: ~/access-logs holds the live logs but is a link outside the home directory, which hosts that jail
-# accounts (CloudLinux CageFS) do not let the API follow; ~/logs holds the daily gzip archives ("Archive logs
-# in your home directory" under Metrics > Raw Access).
-DEFAULT_LOG_DIRS = {"cpanel_uapi": ["/access-logs", "/logs"]}
+DEFAULT_LOG_DIRS = logs.DEFAULT_LOG_DIRS
 ARCHIVE_MAX_AGE_DAYS = 7  # archives untouched for longer are previous months: not analysed
 MAX_BYTES_PER_FILE = 20 * 1024 * 1024  # per run; the rest is read on the next run
 HEAD_BYTES = 256

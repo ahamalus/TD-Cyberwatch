@@ -282,9 +282,9 @@ class CPanelUAPIConnector(Connector):
     def _probe_logs(self) -> CapabilityResult:
         """Raw access logs: cPanel keeps the current ones in ~/access-logs (a link to the server's domain logs).
         Available only if a log is actually read and recognised; never assumed."""
-        from app.monitoring.logs import probe
+        from app.monitoring.logs import DEFAULT_LOG_DIRS, probe
 
-        dirs = [p for p in self.params.options.get("log_paths", []) if isinstance(p, str)] or ["/access-logs"]
+        dirs = [p for p in self.params.options.get("log_paths", []) if isinstance(p, str)] or DEFAULT_LOG_DIRS[self.key]
         ok, notes = [], []
         for d in dirs:
             src = CPanelFileSource(d, self._client())

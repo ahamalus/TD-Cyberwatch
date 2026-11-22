@@ -11,6 +11,7 @@ from app.models import ConnectorCapability, Incident, ScanJob
 from tests.conftest import run_dispatched
 from tests.test_malware import CMD_SHELL
 from tests.test_monitoring_flow import _scan, _website
+from tests.test_services import cpanel_env  # noqa: F401 - fixture
 
 LINE = '{ip} - - [22/Nov/2026:10:{m:02d}:00 +0100] "{method} {path} HTTP/1.1" {status} {size} "-" "Mozilla/5.0"\n'
 
@@ -150,3 +151,21 @@ def test_corrupt_archive_is_reported_not_trusted(alice, sftp_server, sftp_root):
     acct = _connect_with_logs(sess, tid, sftp_server, ["/logs"])
     cap = _cap(acct)
     assert cap.status == "unavailable" and "could not be decompressed" in cap.detail
+
+
+def test_cpanel_connection_test_checks_the_log_archives_folder(cpanel_env):  # noqa: F811
+    """trustdata.ng's host: ~/access-logs unreachable, archives in ~/logs. Both defaults must be probed."""
+    import gzip
+
+    from app.connectors.base import ConnectionParams, SecretMaterial
+    from app.connectors.cpanel import CPanelUAPIConnector
+    from app.core.http import set_transport_factory
+    from tests.test_services import _cpanel_transport
+
+    archive = gzip.compress(_line("/", m=1).encode() * 5)
+    files = {"public_html/index.php": b"<?php echo 1;", "logs/example.com-ssl_log-Nov-2026.gz": archive}
+    set_transport_factory(lambda: _cpanel_transport(files))
+    conn = CPanelUAPIConnector(ConnectionParams("cpanel_uapi", "server.acme-hosting.com", 2083, "acme", "/public_html"),
+                               SecretMaterial("api_token", "TOKEN123"))
+    cap = {c.capability: c for c in conn.discover_capabilities()}["log_access"]
+    assert cap.status == "available" and "/logs" in cap.detail and "archive" in cap.detail, cap.detail
