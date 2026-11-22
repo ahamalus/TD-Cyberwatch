@@ -15,6 +15,17 @@ Last updated: 2026-10-19 (session 1). Statuses: **Not Started · In Progress · 
 | Email | Zoho (smtppro.zoho.com) as hello@trustdata.ng. SPF includes Zoho; Zoho DKIM verified; DMARC p=none (move to quarantine after review) |
 | Phase 2 started | trustdata.ng connected via cPanel UAPI (wghp11.wghservers.com): connection test and capability discovery passed on the live server. The first full scan measured about 2.5 s per file (one HTTPS request per file over Starlink), so a two-WordPress site could not finish in 1 h. This led to parallel keep-alive reads, incremental scans and resumable full passes |
 
+## Roadmap progress (2026-11-22)
+
+| Phase | Status | Notes |
+|---|---|---|
+| 0. Dependable production | Done | Email (Zoho, SPF/DKIM), encrypted backups with restore drill, Cloudflare Tunnel |
+| 1. Malware detection | Done | ClamAV + YARA; WordPress checksum verification; YARA self-test against official releases; learning from false-positive reviews |
+| 2. Real hosting | Done, pilot continuing | cPanel verified on trustdata.ng; DNS TXT ownership verification added |
+| 3. Quality and speed | Done | CI green (backend, frontend, browser tests incl. accessibility); code-split frontend; 200k-file scan in 45 s; per-server scan limit; RLS enforced via restricted DB login |
+| 4. Payments and WhatsApp | Built; live test pending | Refunds, disputes, WhatsApp receipts/STOP/fallback. Needs Paystack test keys and a Meta WhatsApp account for the live test |
+| 5. Hardening and compliance | Built; external items pending | Organisation MFA, single-use TOTP, off-server audit anchors, WCAG 2.2 AA automated checks, NDPA notice/export/erasure/retention. Pending: manual accessibility review (ACCESSIBILITY.md), NDPA management items (PRIVACY_NDPA.md), external pen test (PENTEST_SCOPE.md) |
+
 ## Test runs executed (actual results)
 
 | Suite | Command | Result |
