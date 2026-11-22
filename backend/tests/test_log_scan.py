@@ -169,3 +169,28 @@ def test_cpanel_connection_test_checks_the_log_archives_folder(cpanel_env):  # n
                                SecretMaterial("api_token", "TOKEN123"))
     cap = {c.capability: c for c in conn.discover_capabilities()}["log_access"]
     assert cap.status == "available" and "/logs" in cap.detail and "archive" in cap.detail, cap.detail
+
+
+def test_traffic_to_a_modified_core_file_is_not_treated_as_web_shell_use(alice):
+    """Production finding: bots' failed logins to a modified wp-login.php raised 'flagged file accessed'.
+    The modification is the file scan's finding; normal traffic to a core entry point proves nothing more."""
+    from app.db.base import utcnow
+    from app.db.session import tenant_session
+    from app.models import FileInventoryItem, Website
+    from app.monitoring import log_scan, logs
+    from tests.test_services import _site
+
+    _, tid = alice
+    wid = _site(tid)
+    with tenant_session(tid) as db:
+        for path, vendor in (("wp-login.php", "modified"), ("wp-includes/class-wp-cache-helper.php", "unexpected")):
+            db.add(FileInventoryItem(tenant_id=tid, website_id=wid, path=path, entry_type="file", hash_status="hashed",
+                                     state="present", vendor_status=vendor, first_seen_at=utcnow(), last_seen_at=utcnow()))
+        db.commit()
+        ctx = log_scan._context(db, db.get(Website, wid))
+    assert "/wp-login.php" not in ctx.flagged
+    assert ctx.flagged["/wp-includes/class-wp-cache-helper.php"] == "not part of the official release"
+    traffic = "".join(_line("/wp-login.php", method="POST", ip="157.245.123.162") for _ in range(10))
+    traffic += _line("/wp-includes/class-wp-cache-helper.php", method="POST", ip="198.51.100.7")
+    findings, _ = logs.analyse(logs.parse(traffic)[0], ctx)
+    assert [(f.rule, f.paths) for f in findings] == [("flagged_file_accessed", ["/wp-includes/class-wp-cache-helper.php"])]

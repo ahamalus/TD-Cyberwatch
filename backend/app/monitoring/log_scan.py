@@ -62,7 +62,7 @@ def _context(db: Session, website: Website) -> logs.Context:
                              FileInventoryItem.vendor_status)
                       .where(FileInventoryItem.website_id == website.id, FileInventoryItem.state == "present",
                              (FileInventoryItem.malware_status.in_(["infected", "suspicious"]))
-                             | (FileInventoryItem.vendor_status.in_(["modified", "unexpected"])))).all()
+                             | (FileInventoryItem.vendor_status == "unexpected"))).all()
     for path, mstatus, sigs, vstatus in rows:
         url = logs.url_path(path)
         if mstatus == "infected":
@@ -70,8 +70,11 @@ def _context(db: Session, website: Website) -> logs.Context:
             ctx.critical.add(url)
         elif mstatus == "suspicious" and vstatus != "verified":
             ctx.flagged[url] = "suspicious code: " + ", ".join(s.partition(":")[2] for s in sigs)
-        elif vstatus in ("modified", "unexpected") and logs.PHP.search(path):
-            ctx.flagged[url] = "differs from the official release" if vstatus == "modified" else "not part of the official release"
+        elif vstatus == "unexpected" and logs.PHP.search(path):
+            # A file that should not exist at all: any successful request to it is someone using it.
+            # (A *modified* core file such as wp-login.php is reported by the file scan; ordinary visitors and
+            # bots request it constantly, so traffic to it is not evidence of use by an attacker.)
+            ctx.flagged[url] = "not part of the official release"
     # Files with an open suspicious-file incident (e.g. a PHP file added to uploads).
     for res in db.execute(select(Incident.affected_resources).where(
             Incident.website_id == website.id, Incident.category.in_(["suspicious_file", "malware"]),

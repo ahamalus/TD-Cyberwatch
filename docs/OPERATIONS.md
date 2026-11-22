@@ -86,8 +86,10 @@
     detected and read again from the start. At most 20 MB per file per run; the rest follows next run.
   - **The first run** reads the whole current log, so it can report events from earlier the same day.
   - **Incidents raised (category *Log activity*):**
-    - *flagged file accessed*: a file CyberWatch flagged was used. Critical when the antivirus confirmed
-      malware.
+    - *flagged file accessed*: a file CyberWatch flagged was used. The file must have a malware verdict, an
+      open suspicious-file incident, or be planted in core folders. Critical when the antivirus confirmed
+      malware. Traffic to a merely *modified* core file such as `wp-login.php` is not counted: the file scan
+      reports the modification, and normal visitors use those files.
     - *PHP executed from uploads*: high.
     - *sensitive file served*, such as `.env`, `.git/config`, `wp-config.php` backups or SQL dumps: high.
     - *password guessing*: 20 or more failed `wp-login.php` or `xmlrpc.php` POSTs from one address. Medium,
