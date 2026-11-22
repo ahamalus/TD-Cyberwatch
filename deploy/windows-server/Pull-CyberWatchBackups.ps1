@@ -73,7 +73,8 @@ foreach ($sums in Get-ChildItem $Dest -Filter "SHA256SUMS-*") {
     }
 }
 
-Get-ChildItem $Dest -File | Where-Object { $_.LastWriteTime -lt (Get-Date).AddDays(-$KeepDays) } | Remove-Item -Force
+# Audit anchors (a few bytes each) are kept indefinitely: they prove the audit trail was not rewritten later.
+Get-ChildItem $Dest -File | Where-Object { $_.LastWriteTime -lt (Get-Date).AddDays(-$KeepDays) -and $_.Name -notlike "audit-anchor-*" } | Remove-Item -Force
 $sets = (Get-ChildItem $Dest -Filter "SHA256SUMS-*").Count
 $newest = Get-ChildItem $Dest -Filter "SHA256SUMS-*" | Sort-Object Name -Descending | Select-Object -First 1
 Log ("copied {0} new file(s); {1} backup set(s) held; newest {2}; checksum problems: {3}" -f $copied, $sets, $newest.Name, $bad)

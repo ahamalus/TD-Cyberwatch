@@ -113,6 +113,17 @@ def subscription_maintenance() -> dict:
     return stats
 
 
+@celery_app.task(name="cw.audit_anchor")
+def audit_anchor() -> dict:
+    from app.services import audit_anchor as anchors
+
+    with platform_session() as s:
+        result = anchors.publish(s)
+        s.commit()
+    _record_scheduler("audit_anchor", result)
+    return result
+
+
 @celery_app.task(name="cw.rules_selftest")
 def rules_selftest() -> dict:
     from app.monitoring.selftest import run_selftest

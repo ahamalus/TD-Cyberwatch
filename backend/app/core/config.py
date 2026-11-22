@@ -94,6 +94,10 @@ class Settings(BaseSettings):
     wordpress_api_base: str = "https://api.wordpress.org"
     wordpress_downloads_base: str = "https://downloads.wordpress.org"
 
+    # Off-server copies of the audit-trail anchor (JSON list, e.g. '["audit@yourcompany.com"]'). Use a mailbox
+    # that server administrators cannot alter. Nightly backups also store anchors (see services/audit_anchor.py).
+    audit_anchor_emails: list[str] = Field(default_factory=list)
+
     # Notifications
     smtp_host: str | None = None
     smtp_port: int = 587

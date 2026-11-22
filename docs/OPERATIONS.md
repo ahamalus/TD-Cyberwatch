@@ -67,6 +67,21 @@
   - **Where to see them:** Notifications → Suppression rules, marked "this content only". Disable one there to
     alert on that content again.
 
+- **Audit-trail anchors (tamper evidence)**:
+  - **What they do:** the audit trail is a hash chain, so editing one event breaks it. Someone with full
+    server access could still rewrite the *whole* chain. Anchors record the chain's head (`CWANCHOR v1 seq=…
+    hash=… at=…`) **off the server**: in every nightly backup set (`audit-anchor-<stamp>.txt`, which the
+    Windows host copies and keeps indefinitely) and by daily email to `CW_AUDIT_ANCHOR_EMAILS`.
+  - **Who should receive the emails:** use a mailbox that server administrators cannot edit, for example a
+    director's mailbox.
+  - **To prove the trail was not rewritten:** collect saved anchors (backup files and/or the emails pasted into
+    one text file) and run
+    `docker compose exec -T api python -m app.cli verify-audit --anchors - < anchors.txt`. Every line must
+    say OK. A FAIL means history before that point was changed.
+  - **Health:** `healthcheck.sh` shows an `audit anchor` line, which fails if no anchor was published in the
+    last 36 hours. If the chain itself is broken, no anchor is published and the recipients are emailed an
+    alert.
+
 ## Common problems
 
 | Symptom | Likely cause | Action |

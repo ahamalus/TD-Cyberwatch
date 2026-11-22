@@ -67,6 +67,17 @@ report() { docker compose exec -T api python -m app.cli report-backup "$status" 
   || docker compose run --rm --no-deps -T api python -m app.cli report-backup "$status" "$DB_FILE" >/dev/null 2>&1; }
 report || echo "WARNING: could not record the backup result in CyberWatch" >&2
 
+# Anchor the audit trail next to the backup: the Windows host copies it off this server, so a later rewrite
+# of the audit history can be detected (python -m app.cli verify-audit --anchors FILE).
+ANCHOR_FILE="$BACKUP_DIR/audit-anchor-$STAMP.txt"
+if docker compose exec -T api python -m app.cli audit-anchor > "$ANCHOR_FILE.part" 2>/dev/null && [ -s "$ANCHOR_FILE.part" ]; then
+  mv "$ANCHOR_FILE.part" "$ANCHOR_FILE"
+  [ -n "$BACKUP_GROUP" ] && chgrp "$BACKUP_GROUP" "$ANCHOR_FILE" && chmod 640 "$ANCHOR_FILE"
+else
+  rm -f "$ANCHOR_FILE.part"
+  echo "WARNING: could not anchor the audit trail (is the API running? run: python -m app.cli verify-audit)" >&2
+fi
+
 if [ "$status" = ok ]; then
   echo "backup ok: $STAMP ($(du -h "$DB_FILE" | cut -f1) database, $(du -h "$ST_FILE" | cut -f1) storage, $(( $(date +%s) - started ))s)"
 else

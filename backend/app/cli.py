@@ -7,7 +7,8 @@
     python -m app.cli rotate-credentials        # re-encrypt secrets with the primary key
     python -m app.cli report-backup STATUS PATH # record backup outcome (used by backup script)
     python -m app.cli demo-data                 # synthetic demo tenant (non-production only)
-    python -m app.cli verify-audit              # verify the audit hash chain
+    python -m app.cli verify-audit [--anchors FILE]  # verify the audit hash chain (and saved anchors)
+    python -m app.cli audit-anchor              # record and print an anchor of the audit chain head
     python -m app.cli health                    # PASS/FAIL report of workers, scheduler, queue, audit
     python -m app.cli send-test-email ADDRESS   # send one email now and explain any SMTP failure
     python -m app.cli rules-selftest            # run the YARA rules over official WordPress releases now
@@ -110,12 +111,36 @@ def cmd_report_backup(status: str, location: str) -> None:
     print("Backup status recorded.")
 
 
-def cmd_verify_audit() -> None:
+def cmd_verify_audit(anchors_file: str | None = None) -> None:
+    from app.services import audit_anchor
+
     with platform_session() as db:
         res = audit.verify_chain(db)
-    print(f"valid={res.valid} events={res.events_checked} first_invalid={res.first_invalid_seq} {res.reason or ''}")
-    if not res.valid:
+        print(f"valid={res.valid} events={res.events_checked} first_invalid={res.first_invalid_seq} {res.reason or ''}")
+        checks = []
+        if anchors_file:
+            text = sys.stdin.read() if anchors_file == "-" else open(anchors_file, encoding="utf-8").read()  # noqa: SIM115
+            checks = audit_anchor.verify_anchors(db, text)
+            for c in checks:
+                print(f"{'OK  ' if c.ok else 'FAIL'} {c.line}  ({c.reason})")
+            print(f"anchors checked: {len(checks)}, failed: {sum(not c.ok for c in checks)}")
+            if not checks:
+                print("no anchor lines found in the file")
+    if not res.valid or any(not c.ok for c in checks) or (anchors_file and not checks):
         sys.exit(1)
+
+
+def cmd_audit_anchor() -> None:
+    from app.services import audit_anchor
+
+    with platform_session() as db:
+        try:
+            line = audit_anchor.make_anchor(db)
+        except audit_anchor.ChainBroken as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            sys.exit(1)
+        db.commit()
+    print(line)
 
 
 def _email_hint(error: str) -> str:
@@ -199,6 +224,20 @@ def cmd_ensure_app_role() -> None:
     finally:
         engine.dispose()
     print(f"ensure-app-role: {name} {result}; data access granted, row-level security applies.")
+
+
+def _anchor_health(db) -> tuple[bool, str, str]:
+    from app.services.audit_anchor import last_anchor_age_hours
+
+    age = last_anchor_age_hours(db)
+    emails = get_settings().audit_anchor_emails
+    where = f"emailed to {len(emails)} address(es) and saved with backups" if emails else (
+        "saved with backups only (set CW_AUDIT_ANCHOR_EMAILS for an emailed copy)")
+    if age is None:
+        return False, "audit anchor", "no anchor published yet (runs daily and with each backup)"
+    if age > 36:
+        return False, "audit anchor", f"last anchor {age:.0f} hours old: daily anchoring is not running"
+    return True, "audit anchor", f"last anchor {age:.0f}h ago, {where}"
 
 
 def _selftest_health(db) -> tuple[bool, str, str]:
@@ -292,6 +331,7 @@ def cmd_health() -> None:
         res = audit.verify_chain(db)
         checks.append((res.valid, "audit trail", f"{res.events_checked} events, chain {'intact' if res.valid else 'BROKEN at ' + str(res.first_invalid_seq)}"))
         checks.append(_db_role_health(db))
+        checks.append(_anchor_health(db))
         checks.append(_malware_health())
         checks.append(_selftest_health(db))
         checks.append(_email_health(db))
@@ -321,7 +361,9 @@ def main(argv: list[str]) -> None:
     elif cmd == "report-backup" and len(args) == 2:
         cmd_report_backup(args[0], args[1])
     elif cmd == "verify-audit":
-        cmd_verify_audit()
+        cmd_verify_audit(args[1] if len(args) == 2 and args[0] == "--anchors" else None)
+    elif cmd == "audit-anchor":
+        cmd_audit_anchor()
     elif cmd == "health":
         cmd_health()
     elif cmd == "send-test-email" and len(args) == 1:
