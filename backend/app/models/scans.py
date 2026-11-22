@@ -21,7 +21,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, Timestamps, UUIDPk, utcnow
 
-JOB_TYPES = ("file_scan", "availability", "tls", "connection_test", "capability_discovery")
+JOB_TYPES = ("file_scan", "availability", "tls", "connection_test", "capability_discovery", "log_scan")
 JOB_ACTIVE_STATUSES = ("queued", "running")
 JOB_FINAL_STATUSES = ("succeeded", "partial", "failed", "cancelled")
 
@@ -60,7 +60,7 @@ class ScanJob(UUIDPk, Timestamps, Base):
             "status IN ('queued','running','succeeded','partial','failed','cancelled')", name="status"
         ),
         CheckConstraint(
-            "job_type IN ('file_scan','availability','tls','connection_test','capability_discovery')",
+            "job_type IN ('file_scan','availability','tls','connection_test','capability_discovery','log_scan')",
             name="job_type",
         ),
         # At most one active job of each type per website / per hosting account:
@@ -415,3 +415,23 @@ class RuleSelftest(UUIDPk, Base):
     __table_args__ = (
         UniqueConstraint("rules_version", "product", "slug", "version", name="uq_rule_selftest_release"),
     )
+
+
+class LogCursor(UUIDPk, Base):
+    """How far each access-log file of a website has been analysed (byte offset), so each run reads only
+    new lines. ``head_sha256`` (first bytes of the file) detects rotation or truncation."""
+
+    __tablename__ = "log_cursors"
+
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
+    website_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("websites.id", ondelete="CASCADE"), nullable=False
+    )
+    path: Mapped[str] = mapped_column(String(1024), nullable=False)
+    offset: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    head_sha256: Mapped[str | None] = mapped_column(String(64))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+    __table_args__ = (UniqueConstraint("website_id", "path", name="uq_log_cursor_path"),)

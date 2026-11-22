@@ -220,10 +220,12 @@ export function NewHostingPage() {
                   autoComplete="new-password"
                 />
               )}
-              {type === "sftp" && (
+              {(type === "sftp" || type === "cpanel_uapi") && (
                 <TagsInput
                   label="Log directories (optional)"
-                  description="Absolute paths to web server logs, if your host exposes them. Access is tested, never assumed."
+                  description={type === "cpanel_uapi"
+                    ? "Leave empty to use cPanel's access-logs folder. Access is tested, never assumed."
+                    : "Absolute paths to web server access logs, if your host exposes them. Access is tested, never assumed."}
                   value={form.log_paths}
                   onChange={(v) => setForm({ ...form, log_paths: v })}
                 />

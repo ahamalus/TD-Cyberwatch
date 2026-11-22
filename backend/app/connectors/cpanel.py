@@ -279,6 +279,27 @@ class CPanelUAPIConnector(Connector):
             diags.append(Diagnostic(step, False, exc.message, exc.code))
             return ConnectionTestResult(False, diags, exc.code, exc.message)
 
+    def _probe_logs(self) -> CapabilityResult:
+        """Raw access logs: cPanel keeps the current ones in ~/access-logs (a link to the server's domain logs).
+        Available only if a log is actually read and recognised; never assumed."""
+        from app.monitoring.logs import probe
+
+        dirs = [p for p in self.params.options.get("log_paths", []) if isinstance(p, str)] or ["/access-logs"]
+        ok, notes = [], []
+        for d in dirs:
+            src = CPanelFileSource(d, self._client())
+            try:
+                good, note = probe(src, d)
+            except ConnectorError as exc:
+                good, note = False, f"{d}: {exc.message}"
+            finally:
+                src.close()
+            (ok if good else notes).append(note)
+        return CapabilityResult(
+            Capability.LOG_ACCESS, AVAILABLE if ok else UNAVAILABLE, "; ".join(ok or notes),
+            required_permission="cPanel Raw Access Logs (the access-logs folder in the home directory)",
+        )
+
     def discover_capabilities(self) -> list[CapabilityResult]:
         results: dict[Capability, CapabilityResult] = {}
         source = CPanelFileSource(self.params.root_path, self._client())
@@ -316,9 +337,7 @@ class CPanelUAPIConnector(Connector):
                         Capability.FILE_HASHING):
                 results[cap] = CapabilityResult(cap, UNAVAILABLE, exc.message,
                                                 required_permission="cPanel File Manager feature and API token")
-        results[Capability.LOG_ACCESS] = CapabilityResult(
-            Capability.LOG_ACCESS, UNTESTED, "Log retrieval through UAPI is not implemented in this release."
-        )
+        results[Capability.LOG_ACCESS] = self._probe_logs()
         results[Capability.WEBSITE_MALWARE_SCAN] = CapabilityResult(
             Capability.WEBSITE_MALWARE_SCAN, UNTESTED,
             "Decided by the platform scanner when capabilities are stored (see monitoring.jobs).",

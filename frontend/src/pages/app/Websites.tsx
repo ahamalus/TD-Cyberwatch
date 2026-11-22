@@ -390,6 +390,11 @@ export function WebsiteDetailPage() {
                 <Button variant="default" disabled={!w.hosting_account_id} onClick={() => runCheck.mutate("file_scan")}>
                   Scan files
                 </Button>
+                {w.coverage?.checks.some((c) => c.key === "log_analysis" && c.state === "available") && (
+                  <Button variant="default" onClick={() => runCheck.mutate("log_scan")}>
+                    Analyse logs
+                  </Button>
+                )}
                 {w.url.startsWith("https") && (
                   <Button variant="default" onClick={() => runCheck.mutate("tls")}>
                     Check TLS
@@ -554,6 +559,8 @@ function MonitoringForm({ site, onSaved }: { site: Website; onSaved: () => void 
   });
   const fileCheck = site.coverage?.checks.find((c) => c.key === "file_integrity");
   const fileAvailable = fileCheck && fileCheck.state !== "unavailable";
+  const logCheck = site.coverage?.checks.find((c) => c.key === "log_analysis");
+  const logAvailable = logCheck?.state === "available";
   const minFs = Number(tenant.data?.entitlements.min_file_scan_interval_minutes ?? 1440);
   const minAv = Number(tenant.data?.entitlements.min_availability_interval_minutes ?? 15);
   const disabled = !can("monitoring:manage");
@@ -629,6 +636,18 @@ function MonitoringForm({ site, onSaved }: { site: Website; onSaved: () => void 
               </Group>
               <Switch label="Check TLS certificate" checked={cfg.tls_enabled} disabled={disabled || !site.url.startsWith("https")} onChange={(e) => setCfg({ ...cfg, tls_enabled: e.currentTarget.checked })} />
               <NumberInput label="Warn when certificate expires within (days)" min={1} max={90} value={cfg.tls_expiry_warning_days} disabled={disabled} onChange={(v) => setCfg({ ...cfg, tls_expiry_warning_days: Number(v) || 21 })} />
+            </Stack>
+          </Section>
+          <Section title="Access-log analysis" description="Reads new web server log lines for web-shell use, exposed secrets and password guessing.">
+            <Stack>
+              {!logAvailable && (
+                <Alert color="gray" variant="light" icon={<IconInfoCircle />}>{logCheck?.detail ?? "Needs verified log access."}</Alert>
+              )}
+              <Switch label="Analyse access logs" checked={cfg.log_scan_enabled ?? true} disabled={disabled || !logAvailable}
+                onChange={(e) => setCfg({ ...cfg, log_scan_enabled: e.currentTarget.checked })} />
+              <NumberInput label="Interval (minutes)" description="Hosting panels may clear logs daily: hourly is recommended." min={15} max={1440}
+                value={cfg.log_scan_interval_minutes ?? 60} disabled={disabled || !logAvailable}
+                onChange={(v) => setCfg({ ...cfg, log_scan_interval_minutes: Number(v) || 60 })} />
             </Stack>
           </Section>
           <Section title="Maintenance windows" description="Scheduled checks are deferred during these windows.">

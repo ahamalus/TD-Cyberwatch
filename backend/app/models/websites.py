@@ -109,3 +109,7 @@ class MonitoringConfig(UUIDPk, Timestamps, Base):
     maintenance_windows: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
     next_file_scan_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     next_availability_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    # Access-log analysis (only runs where the hosting connection has verified log access).
+    log_scan_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true", nullable=False)
+    log_scan_interval_minutes: Mapped[int] = mapped_column(Integer, default=60, server_default="60", nullable=False)
+    next_log_scan_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

@@ -67,6 +67,30 @@
   - **Where to see them:** Notifications → Suppression rules, marked "this content only". Disable one there to
     alert on that content again.
 
+- **Access-log analysis**:
+  - **When it runs:** only where the hosting connection has *verified* log access. The connection test must
+    read a real access log and recognise its format: combined or common format from Apache, LiteSpeed or
+    nginx, with an optional virtual-host prefix.
+  - **Where it looks:** on cPanel, `~/access-logs` (cPanel's Raw Access Logs) is used unless log folders are
+    set on the connection; on SFTP, the configured log folders.
+  - **Which files:** only the website's own files, matched by host name (for example
+    `example.com-ssl_log`). Compressed archives are skipped.
+  - **How often:** hourly by default; set it in Website → Monitoring → Access-log analysis.
+  - **How much is read:** only new lines, with a byte position per file. A rotated or truncated log is
+    detected and read again from the start. At most 20 MB per file per run; the rest follows next run.
+  - **The first run** reads the whole current log, so it can report events from earlier the same day.
+  - **Incidents raised (category *Log activity*):**
+    - *flagged file accessed*: a file CyberWatch flagged was used. Critical when the antivirus confirmed
+      malware.
+    - *PHP executed from uploads*: high.
+    - *sensitive file served*, such as `.env`, `.git/config`, `wp-config.php` backups or SQL dumps: high.
+    - *password guessing*: 20 or more failed `wp-login.php` or `xmlrpc.php` POSTs from one address. Medium,
+      or high if a login from that address then succeeded.
+  - **Not alerted:** probes for files that don't exist are only counted in the job summary.
+  - **What evidence keeps:** up to 20 log lines and the addresses involved. Raw logs are not stored.
+  - **If the hosting panel clears logs:** cPanel's "delete logs after statistics processing" means lines older
+    than about a day may be gone. Keep the interval at hourly or shorter.
+
 - **Audit-trail anchors (tamper evidence)**:
   - **What they do:** the audit trail is a hash chain, so editing one event breaks it. Someone with full
     server access could still rewrite the *whole* chain. Anchors record the chain's head (`CWANCHOR v1 seq=…

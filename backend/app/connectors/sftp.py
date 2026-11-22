@@ -154,6 +154,21 @@ class SFTPFileSource(FileSource):
         finally:
             fh.close()
 
+    def read_range(self, rel_path: str, offset: int, max_bytes: int) -> bytes:
+        rel = safe_rel(rel_path)
+        path = self.absolute(rel)
+        try:
+            st = self._sftp.lstat(path)
+            if st.st_mode is None or not stat.S_ISREG(st.st_mode):
+                raise ConnectorError(E_PERMISSION, f"Not a regular file: {rel}")
+            with self._sftp.open(path, "rb") as fh:
+                fh.seek(offset)
+                return fh.read(max_bytes)
+        except ConnectorError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise _classify_io_error(exc, rel) from exc
+
     def close(self) -> None:
         try:
             self._sftp.close()
@@ -319,17 +334,20 @@ class SFTPConnector(Connector):
                     required_permission="Read access to the account's access/error log directory",
                 )
             else:
-                ok = []
+                from app.monitoring.logs import probe
+
+                ok, notes = [], []
                 for lp in log_paths:
                     try:
-                        sftp.listdir_attr(lp)
-                        ok.append(lp)
-                    except Exception:  # noqa: BLE001,S112
-                        continue
+                        good, note = probe(SFTPFileSource(lp, transport, sftp), lp)
+                    except Exception as exc:  # noqa: BLE001
+                        good, note = False, f"{lp}: not readable ({type(exc).__name__})"
+                    (ok if good else notes).append(note)
                 results[Capability.LOG_ACCESS] = CapabilityResult(
                     Capability.LOG_ACCESS,
                     AVAILABLE if ok else UNAVAILABLE,
-                    f"Readable log locations: {', '.join(ok)}" if ok else "Configured log paths are not readable.",
+                    "; ".join(ok) if ok else "; ".join(notes) or "Configured log paths are not readable.",
+                    required_permission="Read access to the account's access-log directory",
                 )
         finally:
             source.close()

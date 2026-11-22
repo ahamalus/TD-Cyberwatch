@@ -61,6 +61,7 @@ log = get_logger(__name__)
 
 QUEUE_FOR = {
     "file_scan": "monitoring",
+    "log_scan": "monitoring",
     "connection_test": "monitoring",
     "capability_discovery": "monitoring",
     "availability": "checks",
@@ -510,6 +511,13 @@ def handle_file_scan(db: Session, job: ScanJob, beat: Callable[[], None]) -> tup
     return status, outcome.summary
 
 
+@handler("log_scan")
+def handle_log_scan(db: Session, job: ScanJob, beat: Callable[[], None]) -> tuple[str, dict]:
+    from app.monitoring.log_scan import run_log_scan
+
+    return run_log_scan(db, job, heartbeat=beat)
+
+
 @handler("availability")
 def handle_availability(db: Session, job: ScanJob, beat: Callable[[], None]) -> tuple[str, dict]:
     website = db.get(Website, job.website_id)
@@ -678,7 +686,8 @@ def schedule_due(limit: int = 500) -> dict[str, int]:
     from app.services.entitlements import effective
 
     now = utcnow()
-    stats = {"file_scan": 0, "availability": 0, "tls": 0, "skipped_maintenance": 0, "skipped_inactive": 0}
+    stats = {"file_scan": 0, "log_scan": 0, "availability": 0, "tls": 0, "skipped_maintenance": 0,
+             "skipped_inactive": 0}
     with platform_session() as s:
         rows = s.execute(
             select(MonitoringConfig, Website, Tenant)
@@ -689,6 +698,8 @@ def schedule_due(limit: int = 500) -> dict[str, int]:
                 (
                     (MonitoringConfig.file_scan_enabled.is_(True)
                      & ((MonitoringConfig.next_file_scan_at.is_(None)) | (MonitoringConfig.next_file_scan_at <= now)))
+                    | (MonitoringConfig.log_scan_enabled.is_(True)
+                       & ((MonitoringConfig.next_log_scan_at.is_(None)) | (MonitoringConfig.next_log_scan_at <= now)))
                     | (MonitoringConfig.availability_enabled.is_(True)
                        & ((MonitoringConfig.next_availability_at.is_(None)) | (MonitoringConfig.next_availability_at <= now)))
                 ),
@@ -707,11 +718,13 @@ def schedule_due(limit: int = 500) -> dict[str, int]:
                 stats["skipped_inactive"] += 1
                 cfg.next_file_scan_at = now + timedelta(hours=6)
                 cfg.next_availability_at = now + timedelta(hours=1)
+                cfg.next_log_scan_at = now + timedelta(hours=6)
                 continue
             if _in_maintenance(cfg, now):
                 stats["skipped_maintenance"] += 1
                 cfg.next_file_scan_at = now + timedelta(minutes=15)
                 cfg.next_availability_at = now + timedelta(minutes=15)
+                cfg.next_log_scan_at = now + timedelta(minutes=15)
                 continue
             jitter = timedelta(seconds=random.randint(0, 60))  # noqa: S311
             if cfg.file_scan_enabled and (cfg.next_file_scan_at is None or cfg.next_file_scan_at <= now):
@@ -722,6 +735,18 @@ def schedule_due(limit: int = 500) -> dict[str, int]:
                         to_dispatch.append(job)
                         stats["file_scan"] += 1
                 cfg.next_file_scan_at = now + timedelta(minutes=cfg.file_scan_interval_minutes) + jitter
+            if cfg.log_scan_enabled and (cfg.next_log_scan_at is None or cfg.next_log_scan_at <= now):
+                # Only where the hosting connection has verified log access (never assumed).
+                if website.hosting_account_id and s.execute(select(ConnectorCapability.id).where(
+                        ConnectorCapability.hosting_account_id == website.hosting_account_id,
+                        ConnectorCapability.capability == Capability.LOG_ACCESS,
+                        ConnectorCapability.status == AVAILABLE)).first():
+                    job, created = enqueue(s, tenant_id=tenant.id, job_type="log_scan", website_id=website.id,
+                                           commit=False)
+                    if created:
+                        to_dispatch.append(job)
+                        stats["log_scan"] += 1
+                cfg.next_log_scan_at = now + timedelta(minutes=cfg.log_scan_interval_minutes) + jitter
             if cfg.availability_enabled and (cfg.next_availability_at is None or cfg.next_availability_at <= now):
                 job, created = enqueue(s, tenant_id=tenant.id, job_type="availability", website_id=website.id,
                                        commit=False)

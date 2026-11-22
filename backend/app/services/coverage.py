@@ -84,7 +84,11 @@ def website_coverage(db: Session, website: Website, cfg: MonitoringConfig | None
                 "malware": ("Each retrieved file is checked by ClamAV and CyberWatch's YARA rules; verdicts appear in the file list."
                             if status == "available" else
                             "Malware scanning is not available for this connection. Run a connection test once the scanner is enabled."),
-                "log_analysis": "Log analysis requires verified log access.",
+                "log_analysis": ("Web server access logs are analysed for web-shell use, exposed secrets and password "
+                                 "guessing (hourly by default)." if status == "available" else
+                                 "Needs verified access to the web server's access logs: add the log folder to the "
+                                 "hosting connection (cPanel: access-logs is tried automatically) and run a "
+                                 "connection test."),
                 "realtime_events": "Polling-based monitoring cannot observe changes between scans.",
             }[key],
         })

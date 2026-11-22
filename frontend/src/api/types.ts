@@ -92,6 +92,8 @@ export interface MonitoringConfig {
   max_total_mb: number | null;
   max_files: number | null;
   maintenance_windows: { start: string; end: string; weekday: number | null; timezone: string; label?: string }[];
+  log_scan_enabled?: boolean;
+  log_scan_interval_minutes?: number;
 }
 
 export interface Website {

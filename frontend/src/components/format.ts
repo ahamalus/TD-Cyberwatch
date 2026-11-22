@@ -68,6 +68,11 @@ export function scanJobDetail(j: { status: string; error_message?: string | null
     const p = r.progress;
     return `${fmtNumber(p.files_seen)} files so far` + (p.files_reused ? ` · ${fmtNumber(p.files_reused)} unchanged (not re-downloaded)` : "");
   }
+  if (r.requests !== undefined) {
+    const n = (r.findings ?? []).length;
+    return `${fmtNumber(r.requests)} log requests analysed` + (n ? ` · ${n} finding(s)` : " · nothing suspicious")
+      + ((r.files ?? []).some((f: { more_pending?: boolean }) => f.more_pending) ? " · more lines pending" : "");
+  }
   if (r.files_seen === undefined) return "";
   let text = `${fmtNumber(r.files_seen)} files · ${fmtNumber(r.changes ?? 0)} changes`;
   if (r.files_reused) text += ` · ${fmtNumber(r.files_reused)} unchanged`;

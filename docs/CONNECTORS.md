@@ -37,6 +37,20 @@ the size limit are recorded as `skipped_size` and compared by size/time with low
 3. Functions used: `Fileman::list_files` and `Fileman::get_file_content` only. Files larger than 5 MB are
    recorded as metadata-only.
 
+4. **Access logs (optional, verified):**
+   - **Where:** `~/access-logs`, cPanel's *Raw Access* logs, which the cPanel account owner can read.
+   - **How they are read:** with the same two Fileman functions as website files.
+   - **When analysis starts:** only after the connection test reads a log and recognises the format.
+   - **If the logs are elsewhere:** set the folder under *Log directories* on the connection, home-relative
+     like the root, for example `/access-logs`.
+   - **Prerequisite:** *Metrics → Raw Access* must be enabled.
+   - **To check on a live account:**
+     - [ ] `list_files dir=access-logs` lists the domain logs (it is a symbolic link to the server's domain-log
+       folder).
+     - [ ] `get_file_content` returns the current log; note the size limit for large logs.
+     - [ ] Whether "Delete each domain's access logs after statistics are processed" is enabled, because that
+       decides how often analysis must run.
+
 ### Live verification required before production use
 
 The build environment could not reach the cPanel API documentation site, so the following were

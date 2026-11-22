@@ -96,6 +96,9 @@ class MonitoringConfigIO(BaseModel):
     max_total_mb: int | None = Field(default=None, ge=1, le=100_000)
     max_files: int | None = Field(default=None, ge=10, le=1_000_000)
     maintenance_windows: list[dict] = Field(default_factory=list, max_length=20)
+    # Access-log analysis runs only where the hosting connection has verified log access.
+    log_scan_enabled: bool = True
+    log_scan_interval_minutes: int = Field(default=60, ge=15, le=1440)
 
     @field_validator("exclusions", "critical_paths")
     @classmethod
@@ -358,7 +361,7 @@ def put_monitoring(website_id: uuid.UUID, body: MonitoringConfigIO,
 
 
 class ScanRequest(BaseModel):
-    check: str = Field(pattern="^(file_scan|availability|tls)$")
+    check: str = Field(pattern="^(file_scan|availability|tls|log_scan)$")
 
 
 class JobRef(BaseModel):
@@ -376,7 +379,7 @@ def run_check(website_id: uuid.UUID, body: ScanRequest, ctx: TenantContext = Dep
         raise ValidationFailed("Resume the website before running checks.")
     if not entitlements.effective(db, ctx.tenant_id).in_service:
         raise ValidationFailed("Your subscription is not active; on-demand checks are unavailable.", code="subscription_inactive")
-    if body.check == "file_scan":
+    if body.check in ("file_scan", "log_scan"):
         if w.hosting_account_id is None:
             raise ValidationFailed("Associate a hosting connection first.")
     if body.check == "tls" and not w.url.startswith("https://"):

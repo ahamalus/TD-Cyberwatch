@@ -167,6 +167,20 @@ class FileSource(ABC):
     def readlink(self, rel_path: str) -> str | None:
         return None
 
+    def read_range(self, rel_path: str, offset: int, max_bytes: int) -> bytes:
+        """Up to ``max_bytes`` of a file starting at ``offset`` (for appending files such as logs).
+        Default: stream the file and skip the first ``offset`` bytes; sources that can seek override it."""
+        out = bytearray()
+        pos = 0
+        for chunk in self.read_chunks(rel_path):
+            end = pos + len(chunk)
+            if end > offset:
+                out.extend(chunk[max(0, offset - pos):])
+                if len(out) >= max_bytes:
+                    return bytes(out[:max_bytes])
+            pos = end
+        return bytes(out)
+
     def close(self) -> None:  # noqa: B027
         pass
 
