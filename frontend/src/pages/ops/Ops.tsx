@@ -48,7 +48,7 @@ export function OpsOverviewPage() {
         <StatCard label="Failed (24h)" icon={IconAlertTriangle} tone={d?.jobs.failed_24h ? "threat" : "secure"} loading={!d} value={d?.jobs.failed_24h} to="/ops/jobs?status=failed" />
         <StatCard label="Stale jobs" icon={IconClockPause} tone={d?.jobs.stale_running ? "amber" : "secure"} loading={!d} value={d?.jobs.stale_running} />
         <StatCard label="Failing connections" icon={IconPlugConnectedX} tone={d?.failing_connections ? "amber" : "secure"} loading={!d} value={d?.failing_connections} to="/ops/diagnostics" />
-        <StatCard label="Workers alive" icon={IconCpu} tone={alive ? "secure" : "threat"} loading={!d} value={d ? `${alive}/${d.workers.length}` : "—"} to="/ops/workers" />
+        <StatCard label="Workers alive" icon={IconCpu} tone={alive && !d?.workers.some((w: any) => w.state === "failed") ? "secure" : "threat"} loading={!d} value={d ? String(alive) : "—"} to="/ops/workers" />
       </SimpleGrid>
       <Grid>
         <Grid.Col span={{ base: 12, lg: 8 }}>
@@ -307,12 +307,18 @@ export function WorkerHealthPage() {
           {d.resource_usage?.load_avg && <Text size="xs" c="dimmed" mt="xs">API host load: {d.resource_usage.load_avg.join(" / ")}</Text>}
         </Section>
       </SimpleGrid>
-      <Section title="Workers" description="Each worker reports a heartbeat every 20 seconds.">
+      <Section title="Workers" description="Each worker reports a heartbeat every 20 seconds. Updates start new worker containers; the old ones show as Replaced and are removed after 7 days.">
         <DataTable rows={d.workers} rowKey={(w: any) => w.name} empty={<EmptyState title="No worker has reported a heartbeat" description="Start the monitoring and notification workers." />}
           columns={[
             { key: "n", header: "Worker", render: (w: any) => <Text size="sm" className="cw-mono">{w.name}</Text> },
             { key: "q", header: "Queues", render: (w: any) => <Group gap={4}>{w.queues.map((q: string) => <Badge key={q} size="xs" variant="outline">{q}</Badge>)}</Group> },
-            { key: "s", header: "State", render: (w: any) => <HealthBadge state={w.alive ? "healthy" : "failed"} /> },
+            {
+              key: "s", header: "State", render: (w: any) => (
+                <HealthBadge state={w.state ?? (w.alive ? "healthy" : "failed")} tooltip={
+                  w.state === "replaced" ? "Stopped; a newer worker (e.g. after an update) serves the same queues. Removed after 7 days."
+                    : w.state === "failed" ? "Stopped, and no running worker serves its queues: those jobs are not being processed." : undefined} />
+              ),
+            },
             { key: "l", header: "Last heartbeat", render: (w: any) => <Text size="sm">{fmtRelative(w.last_seen_at)}</Text> },
             { key: "st", header: "Started", render: (w: any) => <Text size="sm">{fmtDateTime(w.started_at)}</Text>, visibleFrom: "md" },
           ]} />

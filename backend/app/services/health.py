@@ -45,6 +45,12 @@ def system_health(db: Session) -> dict[str, Any]:
          "started_at": w.started_at, "alive": w.last_seen_at >= alive_after}
         for w in db.execute(select(WorkerHeartbeat).order_by(WorkerHeartbeat.last_seen_at.desc()).limit(50)).scalars()
     ]
+    # Every deployment starts new worker containers (new names); the old ones stop reporting. A silent worker
+    # whose queues a live worker now serves was replaced, not failed. Failed means a queue has lost its worker.
+    live_queues = {q for w in workers if w["alive"] for q in (w["queues"] or [])}
+    for w in workers:
+        w["state"] = ("healthy" if w["alive"] else
+                      "replaced" if set(w["queues"] or []) <= live_queues else "failed")
     sched = {r.name: {"last_run_at": r.last_run_at, "last_result": r.last_result}
              for r in db.execute(select(SchedulerState)).scalars()}
     beat = sched.get("beat")

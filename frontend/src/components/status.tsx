@@ -94,6 +94,7 @@ const HEALTH: Record<string, Spec> = {
   none: { tone: "threat", icon: IconCircleX, label: "Not monitored" },
   disabled: { tone: "gray", icon: IconPlayerPause, label: "Disabled" },
   paused: { tone: "gray", icon: IconPlayerPause, label: "Paused" },
+  replaced: { tone: "gray", icon: IconCircleDashed, label: "Replaced" },
   unavailable: { tone: "gray", icon: IconBan, label: "Unavailable" },
   unsupported: { tone: "gray", icon: IconBan, label: "Unsupported" },
   not_applicable: { tone: "gray", icon: IconBan, label: "Not applicable" },

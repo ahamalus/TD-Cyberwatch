@@ -23,6 +23,7 @@ from app.models import (
     TlsCheck,
     UserSession,
     Website,
+    WorkerHeartbeat,
 )
 from app.services.entitlements import effective
 
@@ -37,6 +38,9 @@ def run_retention(db: Session) -> dict[str, int]:
     now = utcnow()
     stats["login_events"] = db.execute(
         delete(LoginEvent).where(LoginEvent.created_at < now - timedelta(days=s.login_history_days))).rowcount or 0
+    # Heartbeats of worker containers replaced by later deployments.
+    stats["worker_heartbeats"] = db.execute(
+        delete(WorkerHeartbeat).where(WorkerHeartbeat.last_seen_at < now - timedelta(days=7))).rowcount or 0
     ended = now - timedelta(days=s.ended_session_days)
     stats["sessions"] = db.execute(
         delete(UserSession).where((UserSession.expires_at < ended) | (UserSession.revoked_at < ended))).rowcount or 0

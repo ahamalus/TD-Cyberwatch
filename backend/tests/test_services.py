@@ -892,3 +892,28 @@ def test_bulk_close_incidents_as_false_positive(alice, bob):
                json={"incident_ids": [str(ids[1])], "status": "investigating", "note": "x" * 12})
     assert r.status_code == 200 and r.json()["updated"] == 0
     assert s.get(f"/api/v1/tenants/{tid}/incidents/{ids[1]}").json()["status"] == "closed"
+
+
+def test_old_worker_containers_show_as_replaced_not_failed():
+    """Each deployment starts new worker containers; the previous ones stop reporting."""
+    from datetime import timedelta
+
+    from app.models import WorkerHeartbeat
+    from app.services.health import system_health
+    from app.services.retention import run_retention
+
+    now = utcnow()
+    with platform_session() as db:
+        for name, queues, seen in (("monitoring@new", ["monitoring", "checks"], now),
+                                   ("monitoring@old", ["monitoring", "checks"], now - timedelta(hours=11)),
+                                   ("notifications@old", ["notifications", "default"], now - timedelta(hours=2)),
+                                   ("monitoring@ancient", ["monitoring", "checks"], now - timedelta(days=9))):
+            db.add(WorkerHeartbeat(worker_name=name, hostname="h", pid=1, queues=queues, started_at=seen, last_seen_at=seen))
+        db.commit()
+        states = {w["name"]: w["state"] for w in system_health(db)["workers"]}
+        assert states["monitoring@new"] == "healthy"
+        assert states["monitoring@old"] == "replaced", "its queues are served by the new worker"
+        assert states["notifications@old"] == "failed", "nothing serves notifications: a real problem"
+        assert run_retention(db)["worker_heartbeats"] == 1
+        db.commit()
+        assert {w["name"] for w in system_health(db)["workers"]} == {"monitoring@new", "monitoring@old", "notifications@old"}
