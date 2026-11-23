@@ -223,7 +223,11 @@ def analyse(entries: list[LogEntry], ctx: Context) -> tuple[list[Finding], dict]
 # accounts (CloudLinux CageFS) do not let the API follow; ~/logs holds the daily gzip archives ("Archive logs
 # in your home directory" under Metrics > Raw Access). Used by both the connection test and the analysis.
 # SSH: the same folders, relative to the login (home) directory.
-DEFAULT_LOG_DIRS = {"cpanel_uapi": ["/access-logs", "/logs"], "ssh_readonly": ["access-logs", "logs"]}
+DEFAULT_LOG_DIRS = {
+    "cpanel_uapi": ["/access-logs", "/logs"],
+    "whm_api": ["/access-logs", "/logs"],  # the monitored cPanel account's home, as with cpanel_uapi
+    "ssh_readonly": ["access-logs", "logs"],
+}
 
 MAX_ARCHIVE_BYTES = 50 * 1024 * 1024  # compressed size read in one go
 MAX_UNPACKED_BYTES = 500 * 1024 * 1024

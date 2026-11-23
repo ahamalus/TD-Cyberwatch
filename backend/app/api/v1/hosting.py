@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import TenantContext, require
 from app.connectors.base import CAPABILITY_LABELS, Capability, SecretMaterial
 from app.connectors.registry import ACCEPTED_SECRET_KINDS, DEFAULT_PORTS, encrypt_secret, is_implemented
+from app.connectors.whm import valid_cpanel_user
 from app.core.config import get_settings
 from app.core.crypto import fingerprint
 from app.core.errors import Conflict, NotFound, ValidationFailed
@@ -55,6 +56,7 @@ class HostingIn(BaseModel):
     username: str = Field(min_length=1, max_length=120)
     root_path: str = Field(default="/", max_length=1024)
     log_paths: list[str] = Field(default_factory=list, max_length=10)
+    cpanel_user: str | None = Field(default=None, max_length=32)  # WHM: the cPanel account to monitor
     credential: CredentialIn
 
     @model_validator(mode="after")
@@ -103,6 +105,7 @@ class HostingOut(BaseModel):
     last_error_message: str | None
     website_count: int
     log_paths: list[str]
+    cpanel_user: str | None = None
     capabilities: list[CapabilityOut]
     last_test_job: dict | None = None
     created_at: datetime
@@ -149,7 +152,8 @@ def hosting_out(db: Session, a: HostingAccount) -> HostingOut:
         host_key_fingerprint=a.host_key_fingerprint, host_key_confirmed_at=a.host_key_confirmed_at,
         last_tested_at=a.last_tested_at, last_success_at=a.last_success_at, last_error_code=a.last_error_code,
         last_error_message=a.last_error_message, website_count=sites,
-        log_paths=list((a.options or {}).get("log_paths", [])), capabilities=cap_out,
+        log_paths=list((a.options or {}).get("log_paths", [])), cpanel_user=(a.options or {}).get("cpanel_user"),
+        capabilities=cap_out,
         last_test_job={"id": str(last_job.id), "status": last_job.status, "queued_at": last_job.queued_at.isoformat(),
                        "finished_at": last_job.finished_at.isoformat() if last_job.finished_at else None,
                        "result": last_job.result_summary, "error": last_job.error_message} if last_job else None,
@@ -219,26 +223,35 @@ def create_account(body: HostingIn, ctx: TenantContext = Depends(require(P.HOSTI
         raise ValidationFailed(str(exc)) from exc
     port = body.port or DEFAULT_PORTS.get(body.connector_type, 22)
     settings = get_settings()
-    allowed_ports = settings.allowed_sftp_ports if body.connector_type in ("sftp", "ssh_readonly") else settings.allowed_cpanel_ports
+    allowed_ports = {"sftp": settings.allowed_sftp_ports, "ssh_readonly": settings.allowed_sftp_ports,
+                     "whm_api": settings.allowed_whm_ports}.get(body.connector_type, settings.allowed_cpanel_ports)
     if port not in allowed_ports:
         raise ValidationFailed(f"Port {port} is not permitted for {definition.name}. Allowed: {allowed_ports}.")
+    options: dict = {"log_paths": _validate_paths(body.log_paths)}
+    if body.connector_type == "whm_api":
+        cpanel_user = (body.cpanel_user or "").strip().lower()
+        if not valid_cpanel_user(cpanel_user):
+            raise ValidationFailed("Enter the cPanel account name to monitor (lowercase letters and digits).")
+        options["cpanel_user"] = cpanel_user
     entitlements.require_capacity(db, ctx.tenant_id, "hosting_accounts")
-    if db.execute(select(HostingAccount.id).where(
-            HostingAccount.tenant_id == ctx.tenant_id, HostingAccount.connector_type == body.connector_type,
-            HostingAccount.hostname == hostname, HostingAccount.username == body.username)).first():
-        raise Conflict("A connection for this host and username already exists.")
+    existing = db.execute(select(HostingAccount.options).where(
+        HostingAccount.tenant_id == ctx.tenant_id, HostingAccount.connector_type == body.connector_type,
+        HostingAccount.hostname == hostname, HostingAccount.username == body.username)).scalars().all()
+    # One WHM login serves many cPanel accounts: only the same account twice is a duplicate.
+    if any((o or {}).get("cpanel_user") == options.get("cpanel_user") for o in existing):
+        raise Conflict("A connection for this host and account already exists.")
     root = "/" + body.root_path.strip().strip("/") if body.root_path.strip() not in ("", "/") else "/"
-    if body.connector_type == "cpanel_uapi" and root == "/":
+    if body.connector_type in ("cpanel_uapi", "whm_api") and root == "/":
         root = "/public_html"
     a = HostingAccount(tenant_id=ctx.tenant_id, name=body.name, connector_type=body.connector_type,
                        provider_name=body.provider_name, hostname=hostname, port=port, username=body.username,
-                       root_path=root, options={"log_paths": _validate_paths(body.log_paths)})
+                       root_path=root, options=options)
     db.add(a)
     db.flush()
     _store_credential(db, a, body.credential)
     audit.record(db, "hosting.created", actor=ctx.actor(), tenant_id=ctx.tenant_id, target_type="hosting_account",
                  target_id=a.id, details={"connector": a.connector_type, "hostname": hostname, "port": port,
-                                          "username": a.username, "credential_kind": body.credential.kind})
+                                          "username": a.username, "cpanel_user": options.get("cpanel_user"), "credential_kind": body.credential.kind})
     db.commit()
     job, created = jobs.enqueue(db, tenant_id=ctx.tenant_id, job_type="connection_test", hosting_account_id=a.id,
                                 trigger="manual", requested_by=ctx.user.id)

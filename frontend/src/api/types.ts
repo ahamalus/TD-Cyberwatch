@@ -158,6 +158,7 @@ export interface HostingAccount {
   last_error_message: string | null;
   website_count: number;
   log_paths: string[];
+  cpanel_user?: string | null;
   capabilities: Capability[];
   last_test_job: {
     id: string;

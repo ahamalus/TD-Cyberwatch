@@ -9,7 +9,8 @@ discovery; monitoring options are limited to capabilities shown as **Available**
 | cPanel UAPI | Implemented; verified live on a CloudLinux/CageFS cPanel host (Nov 2026) | cPanel API token | listing, metadata, content read/hashing; log access (`~/access-logs`, daily archives in `~/logs`) |
 | SSH (read-only commands) | Implemented, tested against an in-process SSH server | Password or SSH private key | everything SFTP verifies, plus server-side fingerprints (`sha256sum`/`md5sum`) when the host allows commands; log access defaults to `~/access-logs` and `~/logs` |
 | External HTTP/TLS | Implemented | none | availability, TLS (per website) |
-| WHM, Plesk, DirectAdmin, provider security APIs, host agent, WordPress plugin | Planned (registered, cannot be selected) | — | — |
+| WHM API | Implemented, tested against a simulated WHM; **not yet verified on a live server** | WHM API token (reseller or root) | same as cPanel UAPI, for the chosen account; account existence, ownership and suspension checked at every test |
+| Plesk, DirectAdmin, provider security APIs, host agent, WordPress plugin | Planned (registered, cannot be selected) | — | — |
 
 Never assumed for any connector: log access, server-side malware scanning, real-time file events,
 provider security APIs.
@@ -50,6 +51,33 @@ connection, with the same host-key pinning, and adds:
 
 If the host refuses commands (SFTP-only or chrooted accounts), the connection still works: the hashing
 capability says *"every file is downloaded instead"*.
+
+## WHM API (reseller or server)
+
+For hosts and resellers: one WHM token reaches every cPanel account it owns, so customers do not each have
+to create a cPanel token. Add **one connection per cPanel account**; they share the WHM hostname, username
+and token, and differ in *cPanel account to monitor*.
+
+1. In WHM → *Development → Manage API Tokens*, create a token named "CyberWatch". **Prefer a reseller
+   token** and give it only the ACLs these calls need (listing accounts and the account-functions privilege
+   that permits `uapi_cpanel`). A root token works but can do far more than CyberWatch needs. Restrict it to
+   the CyberWatch worker's IP if your WHM offers it; set an expiry and rotate it.
+2. Connect with hostname (valid certificate), port 2087 (others must be added to `CW_ALLOWED_WHM_PORTS`),
+   the WHM username, the cPanel account name, and the authorised root relative to that account's home
+   (default `/public_html`).
+3. The connection test calls `accountsummary` (the account exists, this WHM user owns it, and whether it is
+   suspended), then lists the root as that account.
+
+Only these functions are ever called, enforced by an allow-list in `connectors/whm.py` and covered by tests:
+`accountsummary`, and `uapi_cpanel` with `Fileman::list_files` / `Fileman::get_file_content` (the same
+read-only functions as the cPanel connector). Logs default to the account's `~/access-logs` and `~/logs`.
+
+### Live verification checklist (not yet done)
+- [ ] `uapi_cpanel` response nests the UAPI result in `data.uapi`, with `metadata.result` = 1 on success.
+- [ ] A reseller token with minimal ACLs can call `accountsummary` and `uapi_cpanel` for its own accounts,
+      and is refused for accounts it does not own.
+- [ ] Byte-exact content through `uapi_cpanel` (compare `sha256sum` of 3 files, as for cPanel).
+- [ ] Log access through `uapi_cpanel` on CageFS hosts (expect `~/logs` archives, as with cPanel).
 
 ## cPanel UAPI
 

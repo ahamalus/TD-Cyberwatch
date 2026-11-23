@@ -15,6 +15,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -69,7 +70,9 @@ class HostingAccount(UUIDPk, Timestamps, Base):
     options: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
 
     __table_args__ = (
-        UniqueConstraint("tenant_id", "connector_type", "hostname", "username", name="uq_hosting_identity"),
+        # A WHM login monitors several cPanel accounts, so the monitored account is part of the identity.
+        Index("uq_hosting_identity", "tenant_id", "connector_type", "hostname", "username",
+              text("(COALESCE(options->>'cpanel_user', ''))"), unique=True),
     )
 
 

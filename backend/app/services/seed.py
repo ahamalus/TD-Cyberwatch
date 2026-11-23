@@ -78,9 +78,19 @@ CONNECTOR_DEFINITIONS = [
     {
         "key": "whm_api",
         "name": "WHM API",
-        "adapter_version": "0.0.0",
-        "status": "planned",
-        "description": "Reseller/server-level access where the customer is authorised. Not yet implemented.",
+        "adapter_version": "0.9.0",
+        "status": "implemented",
+        "description": (
+            "One reseller or server WHM API token monitors any cPanel account it owns: each account is added as "
+            "its own connection. Uses only accountsummary and the read-only cPanel Fileman functions (through "
+            "uapi_cpanel). Tested against a simulated WHM; not yet verified on a live server."
+        ),
+        "min_poll_interval_minutes": 120,
+        "capability_notes": {
+            "allowed_functions": ["accountsummary", "uapi_cpanel: Fileman::list_files, Fileman::get_file_content"],
+            "limitations": "Same content limits as the cPanel connector. Prefer a reseller token restricted to "
+                           "the needed ACLs over a root token.",
+        },
     },
     {
         "key": "plesk_api",

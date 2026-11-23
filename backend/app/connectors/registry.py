@@ -8,6 +8,7 @@ from app.connectors.base import ConnectionParams, Connector, ConnectorError, Sec
 from app.connectors.cpanel import CPanelUAPIConnector
 from app.connectors.sftp import SFTPConnector
 from app.connectors.ssh_readonly import SSHReadOnlyConnector
+from app.connectors.whm import WHMConnector
 from app.core.crypto import CredentialVault, EncryptedBlob, get_vault
 from app.models import ConnectorDefinition, HostingAccount, HostingCredential
 
@@ -15,6 +16,7 @@ ADAPTERS: dict[str, type[Connector]] = {
     SFTPConnector.key: SFTPConnector,
     CPanelUAPIConnector.key: CPanelUAPIConnector,
     SSHReadOnlyConnector.key: SSHReadOnlyConnector,
+    WHMConnector.key: WHMConnector,
 }
 
 # Credential kinds each connector accepts.
@@ -22,9 +24,10 @@ ACCEPTED_SECRET_KINDS = {
     "sftp": ("password", "private_key"),
     "cpanel_uapi": ("api_token",),
     "ssh_readonly": ("password", "private_key"),
+    "whm_api": ("api_token",),
 }
 
-DEFAULT_PORTS = {"sftp": 22, "cpanel_uapi": 2083, "ssh_readonly": 22}
+DEFAULT_PORTS = {"sftp": 22, "cpanel_uapi": 2083, "ssh_readonly": 22, "whm_api": 2087}
 
 
 def is_implemented(key: str) -> bool:

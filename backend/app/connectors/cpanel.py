@@ -83,7 +83,7 @@ class CPanelClient:
             if self._session is None:
                 p = self.params
                 self._session = PinnedSession(
-                    f"https://{p.hostname}:{p.port}", allowed_ports=get_settings().allowed_cpanel_ports,
+                    f"https://{p.hostname}:{p.port}", allowed_ports=getattr(get_settings(), self.ports_setting),
                     timeout=p.io_timeout, max_connections=max(1, get_settings().cpanel_parallel_reads))
             return self._session
 
@@ -93,23 +93,41 @@ class CPanelClient:
                 self._session.close()
                 self._session = None
 
+    # Overridden by the WHM client (which reaches the same UAPI functions through WHM API 1).
+    label = "cPanel"
+    ports_setting = "allowed_cpanel_ports"
+
+    def _auth_header(self) -> str:
+        return f"cpanel {self.params.username}:{self._token}"
+
+    def _endpoint(self, module: str, function: str, query: dict[str, str]) -> tuple[str, dict[str, str]]:
+        return f"/execute/{module}/{function}", query
+
+    def _unwrap(self, payload: Any) -> Any:
+        # /execute returns the result object directly; tolerate a wrapped form.
+        return payload.get("result", payload) if isinstance(payload, dict) else {}
+
     def call(self, module: str, function: str, query: dict[str, str]) -> Any:
+        path, params = self._endpoint(module, function, query)
+        return self._uapi_result(self._get_json(path, params))
+
+    def _get_json(self, path: str, params: dict[str, str]) -> Any:
         p = self.params
-        settings = get_settings()
-        url = f"https://{p.hostname}:{p.port}/execute/{module}/{function}"
-        headers = {"Authorization": f"cpanel {p.username}:{self._token}"}
+        label = self.label
+        allowed_ports = getattr(get_settings(), self.ports_setting)
+        headers = {"Authorization": self._auth_header()}
         max_body = CPANEL_MAX_CONTENT_BYTES * 2 + 65536
         try:
             if self._keep_alive:
-                resp = self._get_session().request("GET", f"/execute/{module}/{function}", headers=headers,
-                                                   params=query, max_body_bytes=max_body)
+                resp = self._get_session().request("GET", path, headers=headers, params=params,
+                                                   max_body_bytes=max_body)
             else:
                 resp = pinned_request(
                     "GET",
-                    url,
-                    allowed_ports=settings.allowed_cpanel_ports,
+                    f"https://{p.hostname}:{p.port}{path}",
+                    allowed_ports=allowed_ports,
                     headers=headers,
-                    params=query,
+                    params=params,
                     timeout=p.io_timeout,
                     max_redirects=0,
                     max_body_bytes=max_body,
@@ -119,35 +137,36 @@ class CPanelClient:
         except DNSResolutionError as exc:
             raise ConnectorError(E_DNS, str(exc), retryable=True) from exc
         except httpx.ConnectTimeout as exc:
-            raise ConnectorError(E_TIMEOUT, "Connection to cPanel timed out.", retryable=True) from exc
+            raise ConnectorError(E_TIMEOUT, f"Connection to {label} timed out.", retryable=True) from exc
         except httpx.ReadTimeout as exc:
-            raise ConnectorError(E_TIMEOUT, "cPanel did not respond in time.", retryable=True) from exc
+            raise ConnectorError(E_TIMEOUT, f"{label} did not respond in time.", retryable=True) from exc
         except httpx.ConnectError as exc:
             text = str(exc).lower()
             if "certificate" in text or "ssl" in text:
-                raise ConnectorError(E_TLS, "cPanel TLS certificate could not be verified.") from exc
-            raise ConnectorError(E_REFUSED, "Could not connect to cPanel.", retryable=True) from exc
+                raise ConnectorError(E_TLS, f"{label} TLS certificate could not be verified.") from exc
+            raise ConnectorError(E_REFUSED, f"Could not connect to {label}.", retryable=True) from exc
         except httpx.HTTPError as exc:
-            raise ConnectorError(E_PROTOCOL, f"cPanel request failed ({type(exc).__name__}).", retryable=True) from exc
+            raise ConnectorError(E_PROTOCOL, f"{label} request failed ({type(exc).__name__}).", retryable=True) from exc
 
         if resp.status_code in (401, 403):
-            raise ConnectorError(E_AUTH, "cPanel rejected the API token or username.")
+            raise ConnectorError(E_AUTH, f"{label} rejected the API token or username.")
         if resp.status_code == 429:
-            raise ConnectorError(E_RATE_LIMITED, "cPanel rate limit reached.", retryable=True)
+            raise ConnectorError(E_RATE_LIMITED, f"{label} rate limit reached.", retryable=True)
         if resp.status_code >= 500:
-            raise ConnectorError(E_PROTOCOL, f"cPanel returned HTTP {resp.status_code}.", retryable=True)
+            raise ConnectorError(E_PROTOCOL, f"{label} returned HTTP {resp.status_code}.", retryable=True)
         if resp.status_code != 200:
-            raise ConnectorError(E_PROTOCOL, f"cPanel returned HTTP {resp.status_code}.")
+            raise ConnectorError(E_PROTOCOL, f"{label} returned HTTP {resp.status_code}.")
         if resp.truncated:
-            raise ConnectorError(E_PROTOCOL, "cPanel response exceeded the permitted size.")
+            raise ConnectorError(E_PROTOCOL, f"{label} response exceeded the permitted size.")
         try:
-            payload = json.loads(resp.body)
+            return json.loads(resp.body)
         except ValueError as exc:
-            raise ConnectorError(E_PROTOCOL, "cPanel returned a non-JSON response.") from exc
-        # /execute returns the result object directly; tolerate a wrapped form.
-        result = payload.get("result", payload) if isinstance(payload, dict) else {}
+            raise ConnectorError(E_PROTOCOL, f"{label} returned a non-JSON response.") from exc
+
+    def _uapi_result(self, payload: Any) -> Any:
+        result = self._unwrap(payload)
         if not isinstance(result, dict):
-            raise ConnectorError(E_PROTOCOL, "Unexpected cPanel response structure.")
+            raise ConnectorError(E_PROTOCOL, f"Unexpected {self.label} response structure.")
         if result.get("status") in (0, "0", False):
             errors = " ".join(str(e) for e in (result.get("errors") or []))[:300]
             lowered = errors.lower()

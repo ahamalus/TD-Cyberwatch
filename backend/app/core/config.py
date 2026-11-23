@@ -53,6 +53,7 @@ class Settings(BaseSettings):
     outbound_allow_cidrs: list[str] = Field(default_factory=list)
     allowed_sftp_ports: list[int] = Field(default_factory=lambda: [22, 2222])
     allowed_cpanel_ports: list[int] = Field(default_factory=lambda: [2083])
+    allowed_whm_ports: list[int] = Field(default_factory=lambda: [2087])
     allowed_http_ports: list[int] = Field(default_factory=lambda: [80, 443, 8080, 8443])
 
     # Scan limits (defaults; plans and website config may lower them)

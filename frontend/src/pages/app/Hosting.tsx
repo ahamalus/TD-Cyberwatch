@@ -129,7 +129,7 @@ export function NewHostingPage() {
   const qc = useQueryClient();
   const connectors = useQuery({ queryKey: ["connectors"], queryFn: () => api.get<ConnectorInfo[]>("/connectors") });
   const [type, setType] = useState("sftp");
-  const [form, setForm] = useState({ name: "", provider_name: "", hostname: "", port: 22, username: "", root_path: "/public_html", log_paths: [] as string[] });
+  const [form, setForm] = useState({ name: "", provider_name: "", hostname: "", port: 22, username: "", root_path: "/public_html", log_paths: [] as string[], cpanel_user: "" });
   const [kind, setKind] = useState("password");
   const [secret, setSecret] = useState("");
   const [passphrase, setPassphrase] = useState("");
@@ -144,6 +144,7 @@ export function NewHostingPage() {
         ...form,
         connector_type: type,
         provider_name: form.provider_name || null,
+        cpanel_user: type === "whm_api" ? form.cpanel_user.trim().toLowerCase() : null,
         credential: { kind, value: secret, passphrase: passphrase || null },
       }),
     onSuccess: (a) => {
@@ -174,7 +175,7 @@ export function NewHostingPage() {
                   setType(v);
                   const c = implemented.find((x) => x.key === v);
                   setKind(c?.credential_kinds[0] ?? "password");
-                  setForm({ ...form, port: c?.default_port ?? 22, root_path: v === "cpanel_uapi" ? "/public_html" : form.root_path });
+                  setForm({ ...form, port: c?.default_port ?? 22, root_path: v === "cpanel_uapi" || v === "whm_api" ? "/public_html" : form.root_path });
                 }}
                 data={implemented.map((c) => ({ value: c.key, label: c.name }))}
                 aria-label="Connection type"
@@ -189,10 +190,18 @@ export function NewHostingPage() {
                 <TextInput label="Hosting provider (optional)" value={form.provider_name} onChange={(e) => setForm({ ...form, provider_name: e.currentTarget.value })} />
                 <TextInput label="Server hostname" required value={form.hostname} onChange={(e) => setForm({ ...form, hostname: e.currentTarget.value })} placeholder="server.example-host.com" />
                 <NumberInput label="Port" required value={form.port} onChange={(v) => setForm({ ...form, port: Number(v) })} min={1} max={65535} />
-                <TextInput label={type === "cpanel_uapi" ? "cPanel username" : type === "ssh_readonly" ? "SSH username" : "SFTP username"} required value={form.username} onChange={(e) => setForm({ ...form, username: e.currentTarget.value })} autoComplete="off" />
+                <TextInput
+                  label={type === "cpanel_uapi" ? "cPanel username" : type === "whm_api" ? "WHM username" : type === "ssh_readonly" ? "SSH username" : "SFTP username"}
+                  description={type === "whm_api" ? "The reseller (or root) login that owns the account." : undefined}
+                  required value={form.username} onChange={(e) => setForm({ ...form, username: e.currentTarget.value })} autoComplete="off" />
+                {type === "whm_api" && (
+                  <TextInput label="cPanel account to monitor" required value={form.cpanel_user}
+                    description="Its cPanel username. Add one connection per account; they can share the WHM login."
+                    onChange={(e) => setForm({ ...form, cpanel_user: e.currentTarget.value })} autoComplete="off" />
+                )}
                 <TextInput
                   label="Authorised root directory"
-                  description={type === "cpanel_uapi" ? "Relative to the account home." : "Monitoring never reads outside this path."}
+                  description={type === "cpanel_uapi" || type === "whm_api" ? "Relative to the account home." : "Monitoring never reads outside this path."}
                   value={form.root_path}
                   onChange={(e) => setForm({ ...form, root_path: e.currentTarget.value })}
                 />
@@ -212,18 +221,20 @@ export function NewHostingPage() {
                 </>
               ) : (
                 <PasswordInput
-                  label={kind === "api_token" ? "cPanel API token" : "Password"}
-                  description={kind === "api_token" ? "Create a token in cPanel → Security → Manage API Tokens. Revoke it at any time to disconnect." : undefined}
+                  label={kind === "api_token" ? (type === "whm_api" ? "WHM API token" : "cPanel API token") : "Password"}
+                  description={kind !== "api_token" ? undefined : type === "whm_api"
+                    ? "Create a token in WHM → Development → Manage API Tokens. Prefer a reseller token limited to listing accounts and account functions. Revoke it at any time to disconnect."
+                    : "Create a token in cPanel → Security → Manage API Tokens. Revoke it at any time to disconnect."}
                   required
                   value={secret}
                   onChange={(e) => setSecret(e.currentTarget.value)}
                   autoComplete="new-password"
                 />
               )}
-              {(type === "sftp" || type === "cpanel_uapi" || type === "ssh_readonly") && (
+              {(type === "sftp" || type === "cpanel_uapi" || type === "whm_api" || type === "ssh_readonly") && (
                 <TagsInput
                   label="Log directories (optional)"
-                  description={type === "cpanel_uapi"
+                  description={type === "cpanel_uapi" || type === "whm_api"
                     ? "Leave empty to use cPanel's access-logs folder. Access is tested, never assumed."
                     : type === "ssh_readonly"
                     ? "Leave empty to try access-logs and logs in the home directory (cPanel hosts). Access is tested, never assumed."
@@ -288,8 +299,8 @@ function LogDirectoriesSection({ account, canEdit, onSaved }: { account: Hosting
     },
     onError: (e) => notifications.show({ color: "threat", title: "Not saved", message: errorMessage(e) }),
   });
-  if (!["sftp", "cpanel_uapi", "ssh_readonly"].includes(account.connector_type)) return null;
-  const isCpanel = account.connector_type === "cpanel_uapi";
+  if (!["sftp", "cpanel_uapi", "whm_api", "ssh_readonly"].includes(account.connector_type)) return null;
+  const isCpanel = account.connector_type === "cpanel_uapi" || account.connector_type === "whm_api";
   const isSsh = account.connector_type === "ssh_readonly";
   return (
     <Section title="Log directories" description={isCpanel
@@ -380,6 +391,7 @@ export function HostingDetailPage() {
                   ["Provider", h.provider_name ?? "—"],
                   ["Host", `${h.hostname}:${h.port}`],
                   ["Username", h.username],
+                  ...(h.cpanel_user ? [["cPanel account", h.cpanel_user] as [string, string]] : []),
                   ["Authorised root", <Code key="r">{h.root_path}</Code>],
                   ["Credential", h.credential_kind ? `${h.credential_kind.replace("_", " ")} · ${h.credential_fingerprint}` : "None"],
                   ["Credential updated", fmtDateTime(h.credential_rotated_at)],
@@ -495,7 +507,7 @@ export function HostingDetailPage() {
 
 function RotateModal({ opened, onClose, account, onDone }: { opened: boolean; onClose: () => void; account: HostingAccount; onDone: () => void }) {
   const tid = useTenantId();
-  const kinds = account.connector_type === "cpanel_uapi" ? ["api_token"] : ["password", "private_key"];
+  const kinds = ["cpanel_uapi", "whm_api"].includes(account.connector_type) ? ["api_token"] : ["password", "private_key"];
   const [kind, setKind] = useState(kinds[0]);
   const [value, setValue] = useState("");
   const [error, setError] = useState<string | null>(null);

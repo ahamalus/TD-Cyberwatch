@@ -56,6 +56,7 @@ Last updated: 2026-10-19 (session 1). Statuses: **Not Started · In Progress · 
 | Connector interface + registry + credential encryption | Tested | `connectors/base.py`, `connectors/registry.py`, `core/crypto.py` | ciphertext tenant binding, secret absence | KMS/Vault integration (optional) |
 | SFTP connector (read-only, host-key pinning) | Tested | `connectors/sftp.py` | 13 end-to-end tests vs real SFTP server | Verify against the reseller's real hosts |
 | cPanel UAPI connector | Tested, verified live | `connectors/cpanel.py` | mocked UAPI listing/hashing/binary/bad token; live CloudLinux/CageFS account (Nov 2026) | — |
+| WHM API connector | Implemented (simulated WHM) | `connectors/whm.py` | 4 tests: files as chosen account, function allow-list, missing/foreign accounts, bad token, several accounts per login through the API | **Verify on a live WHM** (CONNECTORS.md checklist) |
 | SSH read-only connector | Tested | `connectors/ssh_readonly.py` | 7 tests vs in-process SSH server: command allow-list and injection, path escape, lying server, SFTP fallback, forged mtime caught without re-downloads, home logs | Verify on a real shell account |
 | Capability discovery + timestamped profiles | Tested | `monitoring/jobs.py` | capability assertions | — |
 | Website & hosting registration, duplicate detection, verification (HTTP file) | Tested | `api/v1/websites.py`, `api/v1/hosting.py` | CRUD, duplicate, SSRF URL tests | DNS TXT verification |
