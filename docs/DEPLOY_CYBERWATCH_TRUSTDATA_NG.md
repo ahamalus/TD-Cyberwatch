@@ -2,6 +2,20 @@
 
 A step-by-step runbook for the production pilot. Time needed: about 30 minutes once the server exists.
 
+> **Which layout are you running?** This runbook is for a stand-alone VPS where CyberWatch's own Caddy
+> (`deploy/docker-compose.edge.yml`) terminates HTTPS. **The current production server is not that:** it is
+> the Hyper-V VM `cyberwatch` (192.168.1.242) behind Cloudflare Tunnel and the edge VM's Caddy, which reach
+> the `web` container on port 8080 (WINDOWS_SERVER_HYPERV.md). On that server **never add
+> `-f deploy/docker-compose.edge.yml`**: it removes port 8080 and the site goes offline. Update it with:
+>
+> ```bash
+> cd /opt/cyberwatch && sudo -u cyberwatch git pull
+> sudo -u cyberwatch docker compose up -d --build
+> ```
+>
+> Database migrations and reference data (connector registry, plans, roles) are applied automatically by
+> the `migrate` container on every start; no separate seed command is needed.
+
 ## What you need
 | Item | Detail |
 |---|---|
@@ -56,6 +70,7 @@ Paystack webhook URL: `https://cyberwatch.trustdata.ng/api/v1/webhooks/paystack`
 Schedule `deploy/scripts/backup.sh` nightly (DEPLOYMENT.md §5).
 
 ## Updating later
+(Stand-alone VPS with the Caddy edge only. For the Hyper-V production server, see the note at the top.)
 ```bash
 cd /opt/cyberwatch && sudo -u cyberwatch git pull
 sudo -u cyberwatch docker compose -f docker-compose.yml -f deploy/docker-compose.edge.yml up -d --build
