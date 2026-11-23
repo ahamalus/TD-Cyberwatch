@@ -783,6 +783,7 @@ def run_file_scan(
             "files_seen": result.files_seen,
             "files_hashed": result.files_hashed,
             "files_reused": result.files_reused,
+            "files_hashed_remotely": result.files_hashed_remotely,
             "content_mode": mode,
             "errors": len(result.errors),
             "limits_hit": sorted(result.limits_hit),

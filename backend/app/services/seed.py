@@ -37,8 +37,9 @@ CONNECTOR_DEFINITIONS = [
         "adapter_version": "0.9.0",
         "status": "implemented",
         "description": (
-            "Read-only file listing and content retrieval via cPanel UAPI Fileman functions using a "
-            "cPanel API token. Requires verification against a live cPanel server before production use."
+            "Read-only file listing, content retrieval and access-log analysis via cPanel UAPI (Fileman) with "
+            "a cPanel API token. Verified against a live cPanel server (CloudLinux/CageFS): logs are read from "
+            "the daily archives in ~/logs."
         ),
         "min_poll_interval_minutes": 120,
         "capability_notes": {
@@ -60,9 +61,19 @@ CONNECTOR_DEFINITIONS = [
     {
         "key": "ssh_readonly",
         "name": "SSH (read-only commands)",
-        "adapter_version": "0.0.0",
-        "status": "planned",
-        "description": "Strictly allow-listed, read-only commands. Not yet implemented.",
+        "adapter_version": "1.0.0",
+        "status": "implemented",
+        "description": (
+            "Everything SFTP does, plus server-side fingerprints (sha256sum/md5sum only, checked against a "
+            "downloaded file) so content already scanned is not downloaded again, and the live access logs in "
+            "~/access-logs. Falls back to plain SFTP downloads where the host does not allow commands."
+        ),
+        "min_poll_interval_minutes": 60,
+        "capability_notes": {
+            "allowed_commands": ["sha256sum", "md5sum"],
+            "never_assumed": ["hosting_malware_scan", "realtime_file_events", "provider_security_api"],
+            "limitations": "Polling detects changes between scans only; transient changes can be missed.",
+        },
     },
     {
         "key": "whm_api",

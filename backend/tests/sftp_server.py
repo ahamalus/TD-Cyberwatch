@@ -25,6 +25,10 @@ class ServerState:
     deny: set[str] = field(default_factory=set)  # absolute remote paths that fail
     write_attempts: list[str] = field(default_factory=list)
     authorized_key: paramiko.PKey | None = None
+    # Remote commands (SSH read-only connector). Off by default: the SFTP connector must never use them.
+    allow_exec: bool = False
+    exec_commands: list[str] = field(default_factory=list)
+    lie_about_hashes: bool = False  # a compromised/broken server returning wrong digests
 
 
 class _Handle(SFTPHandle):
@@ -142,9 +146,52 @@ class _Server(paramiko.ServerInterface):
         return paramiko.OPEN_SUCCEEDED if kind == "session" else paramiko.OPEN_FAILED_ADMINISTRATIVELY_PROHIBITED
 
     def check_channel_exec_request(self, channel, command):
-        # Remote command execution is refused; the connector must never use it.
-        self.state.write_attempts.append(f"exec:{command!r}")
-        return False
+        if not self.state.allow_exec:
+            # Remote command execution is refused; the SFTP connector must never use it.
+            self.state.write_attempts.append(f"exec:{command!r}")
+            return False
+        cmd = command.decode() if isinstance(command, bytes) else command
+        self.state.exec_commands.append(cmd)
+        threading.Thread(target=_run_command, args=(channel, cmd, self.state), daemon=True).start()
+        return True
+
+
+def _run_command(channel, cmd: str, state: ServerState) -> None:
+    """Emulate the few read-only commands a shell would run (pwd, sha256sum, md5sum) against the served root."""
+    import hashlib
+    import shlex
+    import time
+
+    time.sleep(0.05)  # let paramiko send the exec-accepted reply before the channel is closed
+    try:
+        argv = shlex.split(cmd)
+    except ValueError:
+        argv = []
+    out, err, status = b"", b"", 0
+    if argv == ["pwd"]:
+        out = b"/home/webuser\n"
+    elif argv and argv[0] in ("sha256sum", "md5sum") and "--" in argv:
+        algo = hashlib.sha256 if argv[0] == "sha256sum" else hashlib.md5
+        for path in argv[argv.index("--") + 1:]:
+            local = os.path.join(state.root, os.path.normpath("/" + path).lstrip("/"))
+            try:
+                with open(local, "rb") as fh:
+                    digest = algo(fh.read()).hexdigest()
+            except OSError:
+                err += f"{argv[0]}: {path}: No such file or directory\n".encode()
+                status = 1
+                continue
+            if state.lie_about_hashes:
+                digest = "0" * len(digest)
+            out += f"{digest}  {path}\n".encode()
+    else:
+        err, status = b"command not permitted\n", 126
+    try:
+        channel.sendall(out)
+        channel.sendall_stderr(err)
+        channel.send_exit_status(status)
+    finally:
+        channel.close()
 
 
 class TestSFTPServer:

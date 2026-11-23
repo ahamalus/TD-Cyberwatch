@@ -219,7 +219,7 @@ def create_account(body: HostingIn, ctx: TenantContext = Depends(require(P.HOSTI
         raise ValidationFailed(str(exc)) from exc
     port = body.port or DEFAULT_PORTS.get(body.connector_type, 22)
     settings = get_settings()
-    allowed_ports = settings.allowed_sftp_ports if body.connector_type == "sftp" else settings.allowed_cpanel_ports
+    allowed_ports = settings.allowed_sftp_ports if body.connector_type in ("sftp", "ssh_readonly") else settings.allowed_cpanel_ports
     if port not in allowed_ports:
         raise ValidationFailed(f"Port {port} is not permitted for {definition.name}. Allowed: {allowed_ports}.")
     entitlements.require_capacity(db, ctx.tenant_id, "hosting_accounts")

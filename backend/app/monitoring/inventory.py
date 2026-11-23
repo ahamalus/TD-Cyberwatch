@@ -93,6 +93,7 @@ class InventoryResult:
     files_hashed: int = 0
     files_not_hashed: int = 0
     files_reused: int = 0  # hash taken from the previous scan (unchanged size and mtime)
+    files_hashed_remotely: int = 0  # fingerprinted on the server; content already scanned, so not downloaded
     bytes_hashed: int = 0
     failure_reason: str | None = None
 
@@ -212,6 +213,24 @@ def _fetch(source: FileSource, inspector: ContentInspector | None, rel: str, siz
         return None, 0, None, exc, None
 
 
+def _use_remote_digests(source, to_fetch, inspector, observer, result, budget):
+    wanted = [r for r in to_fetch if not (observer is not None and observer.wants(r.path))]
+    digests = source.remote_digests([r.path for r in wanted], {r.path: r.size for r in wanted}) if wanted else {}
+    remaining = []
+    for rec in to_fetch:
+        found = digests.get(rec.path)
+        cached = inspector.cached_verdict(found[0]) if (found and inspector is not None) else None
+        if found and (inspector is None or cached is not None):
+            rec.sha256, rec.md5 = found
+            rec.hash_status, rec.inspection = "hashed", cached
+            budget += rec.size or 0  # reserved for a download that is no longer needed
+            result.files_hashed += 1
+            result.files_hashed_remotely += 1
+        else:
+            remaining.append(rec)
+    return remaining, budget
+
+
 def _walk(source, exclusions, limits, progress, hash_files, inspector, previous, pool, observer) -> InventoryResult:
     result = InventoryResult(status="completed")
     started = time.monotonic()
@@ -304,6 +323,10 @@ def _walk(source, exclusions, limits, progress, hash_files, inspector, previous,
             processed += 1
             if progress and processed % 200 == 0:
                 progress(result)
+
+        # Sources that can fingerprint files on the server (SSH) skip downloads of content already scanned.
+        if to_fetch and getattr(source, "remote_hashing", False):
+            to_fetch, budget = _use_remote_digests(source, to_fetch, inspector, observer, result, budget)
 
         # Download this directory's files (concurrently when a pool is given).
         if to_fetch:

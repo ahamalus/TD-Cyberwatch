@@ -76,6 +76,7 @@ export function scanJobDetail(j: { status: string; error_message?: string | null
   if (r.files_seen === undefined) return "";
   let text = `${fmtNumber(r.files_seen)} files · ${fmtNumber(r.changes ?? 0)} changes`;
   if (r.files_reused) text += ` · ${fmtNumber(r.files_reused)} unchanged`;
+  if (r.files_hashed_remotely) text += ` · ${fmtNumber(r.files_hashed_remotely)} verified on the server`;
   if ((r.limits_hit ?? []).includes("time")) text += " · time limit reached, the next scan continues";
   return text;
 }

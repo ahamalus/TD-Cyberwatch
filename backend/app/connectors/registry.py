@@ -7,21 +7,24 @@ import json
 from app.connectors.base import ConnectionParams, Connector, ConnectorError, SecretMaterial
 from app.connectors.cpanel import CPanelUAPIConnector
 from app.connectors.sftp import SFTPConnector
+from app.connectors.ssh_readonly import SSHReadOnlyConnector
 from app.core.crypto import CredentialVault, EncryptedBlob, get_vault
 from app.models import ConnectorDefinition, HostingAccount, HostingCredential
 
 ADAPTERS: dict[str, type[Connector]] = {
     SFTPConnector.key: SFTPConnector,
     CPanelUAPIConnector.key: CPanelUAPIConnector,
+    SSHReadOnlyConnector.key: SSHReadOnlyConnector,
 }
 
 # Credential kinds each connector accepts.
 ACCEPTED_SECRET_KINDS = {
     "sftp": ("password", "private_key"),
     "cpanel_uapi": ("api_token",),
+    "ssh_readonly": ("password", "private_key"),
 }
 
-DEFAULT_PORTS = {"sftp": 22, "cpanel_uapi": 2083}
+DEFAULT_PORTS = {"sftp": 22, "cpanel_uapi": 2083, "ssh_readonly": 22}
 
 
 def is_implemented(key: str) -> bool:

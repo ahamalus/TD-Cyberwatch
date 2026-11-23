@@ -189,7 +189,7 @@ export function NewHostingPage() {
                 <TextInput label="Hosting provider (optional)" value={form.provider_name} onChange={(e) => setForm({ ...form, provider_name: e.currentTarget.value })} />
                 <TextInput label="Server hostname" required value={form.hostname} onChange={(e) => setForm({ ...form, hostname: e.currentTarget.value })} placeholder="server.example-host.com" />
                 <NumberInput label="Port" required value={form.port} onChange={(v) => setForm({ ...form, port: Number(v) })} min={1} max={65535} />
-                <TextInput label={type === "cpanel_uapi" ? "cPanel username" : "SFTP username"} required value={form.username} onChange={(e) => setForm({ ...form, username: e.currentTarget.value })} autoComplete="off" />
+                <TextInput label={type === "cpanel_uapi" ? "cPanel username" : type === "ssh_readonly" ? "SSH username" : "SFTP username"} required value={form.username} onChange={(e) => setForm({ ...form, username: e.currentTarget.value })} autoComplete="off" />
                 <TextInput
                   label="Authorised root directory"
                   description={type === "cpanel_uapi" ? "Relative to the account home." : "Monitoring never reads outside this path."}
@@ -220,11 +220,13 @@ export function NewHostingPage() {
                   autoComplete="new-password"
                 />
               )}
-              {(type === "sftp" || type === "cpanel_uapi") && (
+              {(type === "sftp" || type === "cpanel_uapi" || type === "ssh_readonly") && (
                 <TagsInput
                   label="Log directories (optional)"
                   description={type === "cpanel_uapi"
                     ? "Leave empty to use cPanel's access-logs folder. Access is tested, never assumed."
+                    : type === "ssh_readonly"
+                    ? "Leave empty to try access-logs and logs in the home directory (cPanel hosts). Access is tested, never assumed."
                     : "Absolute paths to web server access logs, if your host exposes them. Access is tested, never assumed."}
                   value={form.log_paths}
                   onChange={(v) => setForm({ ...form, log_paths: v })}
@@ -286,14 +288,17 @@ function LogDirectoriesSection({ account, canEdit, onSaved }: { account: Hosting
     },
     onError: (e) => notifications.show({ color: "threat", title: "Not saved", message: errorMessage(e) }),
   });
-  if (account.connector_type !== "sftp" && account.connector_type !== "cpanel_uapi") return null;
+  if (!["sftp", "cpanel_uapi", "ssh_readonly"].includes(account.connector_type)) return null;
   const isCpanel = account.connector_type === "cpanel_uapi";
+  const isSsh = account.connector_type === "ssh_readonly";
   return (
     <Section title="Log directories" description={isCpanel
       ? "Where web server access logs are read. Leave empty to try cPanel's access-logs and logs folders."
+      : isSsh
+      ? "Absolute paths to web server access logs. Leave empty to try access-logs and logs in the home directory."
       : "Absolute paths to web server access logs on this server."}>
       <Stack gap="xs">
-        <TagsInput aria-label="Log directories" placeholder={isCpanel ? "/access-logs, /logs (defaults)" : "/var/log/apache2"} value={paths}
+        <TagsInput aria-label="Log directories" placeholder={isCpanel ? "/access-logs, /logs (defaults)" : isSsh ? "Home access-logs and logs (defaults)" : "/var/log/apache2"} value={paths}
           onChange={setPaths} disabled={!canEdit} />
         {canEdit && (
           <Button size="xs" w="fit-content" onClick={() => save.mutate()} loading={save.isPending}

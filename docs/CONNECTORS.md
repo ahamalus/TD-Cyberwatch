@@ -6,9 +6,10 @@ discovery; monitoring options are limited to capabilities shown as **Available**
 | Connector | Status | Credential | Capabilities verified at discovery |
 |---|---|---|---|
 | SFTP | Implemented, tested against a real SFTP server | Password or SSH private key (Ed25519/ECDSA/RSA) | listing, metadata, content read, hashing; log access only if configured paths are readable |
-| cPanel UAPI | Implemented, tested against a mocked UAPI; **needs live verification** | cPanel API token | listing, metadata, content read/hashing |
+| cPanel UAPI | Implemented; verified live on a CloudLinux/CageFS cPanel host (Nov 2026) | cPanel API token | listing, metadata, content read/hashing; log access (`~/access-logs`, daily archives in `~/logs`) |
+| SSH (read-only commands) | Implemented, tested against an in-process SSH server | Password or SSH private key | everything SFTP verifies, plus server-side fingerprints (`sha256sum`/`md5sum`) when the host allows commands; log access defaults to `~/access-logs` and `~/logs` |
 | External HTTP/TLS | Implemented | none | availability, TLS (per website) |
-| SSH commands, WHM, Plesk, DirectAdmin, provider security APIs, host agent, WordPress plugin | Planned (registered, cannot be selected) | — | — |
+| WHM, Plesk, DirectAdmin, provider security APIs, host agent, WordPress plugin | Planned (registered, cannot be selected) | — | — |
 
 Never assumed for any connector: log access, server-side malware scanning, real-time file events,
 provider security APIs.
@@ -27,6 +28,28 @@ provider security APIs.
 
 Notes: symbolic links are recorded but never followed; hidden files (dotfiles) are inventoried; files above
 the size limit are recorded as `skipped_size` and compared by size/time with low confidence.
+
+## SSH (read-only commands)
+
+Use this instead of SFTP when the account also allows SSH commands (most cPanel hosts with *Shell Access*
+enabled; CloudLinux "jailshell" is fine). It does everything the SFTP connector does over the same single
+connection, with the same host-key pinning, and adds:
+
+- **Server-side fingerprints.** CyberWatch may run exactly two programs: `sha256sum -- <files>` and
+  `md5sum -- <files>`. Every argument is a path inside the authorised root, shell-quoted; nothing else is
+  ever executed (enforced in code by an allow-list, and covered by tests that try `rm`, `sh`, `cat` and
+  command injection in file names). Content that was already scanned is recognised by its fingerprint and
+  not downloaded again, so the weekly full check costs a few commands instead of downloading the whole site,
+  and a file altered with a forged modification time is still caught.
+- **Cross-check.** Before trusting the server's fingerprints in a scan, one file is downloaded and hashed
+  locally; any mismatch (or any command error) switches back to downloading every file, like SFTP. A host
+  that can lie about fingerprints could equally serve altered files over SFTP, so this adds no new trust.
+- **Live access logs** from `~/access-logs` (and the archives in `~/logs`) without configuring a path,
+  because SSH sees the account the way the account owner does (cPanel's API cannot follow that link on
+  CageFS hosts).
+
+If the host refuses commands (SFTP-only or chrooted accounts), the connection still works: the hashing
+capability says *"every file is downloaded instead"*.
 
 ## cPanel UAPI
 
@@ -54,17 +77,19 @@ the size limit are recorded as `skipped_size` and compared by size/time with low
      - [ ] Whether "Delete each domain's access logs after statistics are processed" is enabled, because that
        decides how often analysis must run.
 
-### Live verification required before production use
+### Live verification
 
-The build environment could not reach the cPanel API documentation site, so the following were
-implemented from secondary sources and must be confirmed against a live cPanel account:
+Verified in November 2026 against a production cPanel account on a CloudLinux/CageFS host (trustdata.ng):
+listing including dotfiles, byte-exact content, home-relative paths, and log access through the daily
+archives in `~/logs` (the live `~/access-logs` link is not readable through the API on CageFS). The
+original checklist is kept below for other hosts:
 
-- [ ] `list_files` honours `show_hidden=1` (dotfiles such as `.htaccess` appear). Discovery notes when no
+- [x] `list_files` honours `show_hidden=1` (dotfiles such as `.htaccess` appear). Discovery notes when no
       dotfiles are observed at the root.
-- [ ] Per-entry fields `file`, `fullpath`, `type` (`file`/`dir`/`link`), `size`, `mtime`, `nicemode`.
-- [ ] `get_file_content` with `from_charset=ISO-8859-1&to_charset=UTF-8` returns byte-exact content for
+- [x] Per-entry fields `file`, `fullpath`, `type` (`file`/`dir`/`link`), `size`, `mtime`, `nicemode`.
+- [x] `get_file_content` with `from_charset=ISO-8859-1&to_charset=UTF-8` returns byte-exact content for
       binary files (compare a SHA-256 computed locally with the CyberWatch inventory hash).
-- [ ] The `dir` parameter accepts home-relative paths such as `public_html/wp-content`.
+- [x] The `dir` parameter accepts home-relative paths such as `public_html/wp-content`.
 
 Procedure: connect a test account, run a scan, then download 3 files (one text, one image, one `.htaccess`)
 via cPanel File Manager and compare `sha256sum` with the inventory. Record results in BUILD_STATUS.md.

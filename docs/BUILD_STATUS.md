@@ -55,7 +55,8 @@ Last updated: 2026-10-19 (session 1). Statuses: **Not Started · In Progress · 
 | Roles/permissions, tenant context, managed-service grants | Tested | `core/permissions.py`, `api/deps.py`, `api/v1/tenants.py` | escalation, support-agent, grant tests | — |
 | Connector interface + registry + credential encryption | Tested | `connectors/base.py`, `connectors/registry.py`, `core/crypto.py` | ciphertext tenant binding, secret absence | KMS/Vault integration (optional) |
 | SFTP connector (read-only, host-key pinning) | Tested | `connectors/sftp.py` | 13 end-to-end tests vs real SFTP server | Verify against the reseller's real hosts |
-| cPanel UAPI connector | Implemented (mock-tested) | `connectors/cpanel.py` | mocked UAPI listing/hashing/binary/bad token | **Blocked on live verification** (docs host unreachable; see CONNECTORS.md checklist) |
+| cPanel UAPI connector | Tested, verified live | `connectors/cpanel.py` | mocked UAPI listing/hashing/binary/bad token; live CloudLinux/CageFS account (Nov 2026) | — |
+| SSH read-only connector | Tested | `connectors/ssh_readonly.py` | 7 tests vs in-process SSH server: command allow-list and injection, path escape, lying server, SFTP fallback, forged mtime caught without re-downloads, home logs | Verify on a real shell account |
 | Capability discovery + timestamped profiles | Tested | `monitoring/jobs.py` | capability assertions | — |
 | Website & hosting registration, duplicate detection, verification (HTTP file) | Tested | `api/v1/websites.py`, `api/v1/hosting.py` | CRUD, duplicate, SSRF URL tests | DNS TXT verification |
 | File inventory, streaming SHA-256, baseline, change detection, rename inference | Tested | `monitoring/inventory.py`, `monitoring/file_scan.py` | add/modify/delete/rename, limits, exclusions | — |
@@ -116,7 +117,6 @@ Last updated: 2026-10-19 (session 1). Statuses: **Not Started · In Progress · 
 
 ## Known limitations
 - Polling-based detection only; no real-time file events or log analysis yet. Malware scanning covers files up to 10 MB that CyberWatch can read; it cannot see what is never written to disk (e.g. injected database content).
-- cPanel connector unverified against a live server.
 - Risk scoring is a simple documented heuristic.
 - Frontend bundle not code-split; UI not independently accessibility-audited.
 - Report generation is synchronous (fine for pilot scale; move to worker for large estates).
