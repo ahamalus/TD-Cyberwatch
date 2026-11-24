@@ -35,7 +35,7 @@ from app.models import (
     Website,
 )
 from app.models.incidents import SEVERITY_RANK
-from app.monitoring import malware, vendor
+from app.monitoring import guarded, malware, vendor
 from app.monitoring.inventory import (
     DEFAULT_EXCLUSIONS,
     DIR_LISTED,
@@ -254,6 +254,15 @@ def _change_row(c: Change, snapshot: FileSnapshot, prev_id: uuid.UUID | None) ->
         "severity": c.severity,
         "detected_at": snapshot.completed_at or utcnow(),
     }
+
+
+def _mark_guarded(c: Change) -> None:
+    """A guarded data file cannot execute, so the script-related heuristics do not apply to it."""
+    script_flags = {"script_in_upload_dir", "suspicious_filename", "double_extension", "hidden_script",
+                    "script_changed"}
+    c.flags = ["guarded_data_file"] + [f for f in c.flags if f not in script_flags]
+    c.severity = max(("low", *(RULES_BY_KEY[f].severity for f in c.flags if f in RULES_BY_KEY)),
+                     key=lambda s: SEVERITY_RANK[s])
 
 
 def _raise_incidents(
@@ -677,12 +686,15 @@ def run_file_scan(
     inspector = malware.ContentInspector(db, website.id) if hash_files else None
     # Version files (wp-includes/version.php, plugin headers) are read during the walk for checksum lookup.
     observer = vendor.WordPressObserver() if hash_files else None
+    # PHP files in upload folders are read to recognise guarded data files (plugin logs; see guarded.py).
+    guard = guarded.GuardObserver() if hash_files else None
     try:
         connector = build_connector(account, credential, definition)
         with connector.open_file_source(root) as source:
             result = walk_inventory(source, exclusions, scan_limits(cfg), progress=progress, hash_files=hash_files,
                                     inspector=inspector, previous=prev_entries if reuse_unchanged else None,
-                                    parallel=getattr(source, "parallel_reads", 1), observer=observer)
+                                    parallel=getattr(source, "parallel_reads", 1),
+                                    observer=guarded.CompositeObserver(observer, guard) if observer else None)
     except ConnectorError as exc:
         snapshot.status = "failed"
         snapshot.failure_reason = exc.message
@@ -719,6 +731,8 @@ def run_file_scan(
     critical = list(cfg.critical_paths) if cfg else []
     for c in changes:
         classify_change(c, critical)
+        if guard is not None and c.path in guard.guarded and "script_in_upload_dir" in c.flags:
+            _mark_guarded(c)
     if changes:
         rows = [_change_row(c, snapshot, prev.id if prev else None) for c in changes]
         for i in range(0, len(rows), 2000):

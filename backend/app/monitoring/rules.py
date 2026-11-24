@@ -53,6 +53,8 @@ RULES = [
     RuleInfo("hidden_script", "medium", "A hidden (dot-prefixed) script file was added or modified."),
     RuleInfo("server_config_changed", "medium",
              "A web-server or PHP configuration file (.htaccess, .user.ini, ...) changed."),
+    RuleInfo("guarded_data_file", "low",
+             "A PHP data file (such as a plugin log) whose first statement stops execution changed; it cannot run."),
     RuleInfo("script_changed", "medium", "A server-side script file was added, modified or renamed."),
     RuleInfo("critical_path", "high", "The change is inside a path the customer marked as critical."),
     RuleInfo("permissions_executable", "medium", "A file in the web root became executable."),
