@@ -264,3 +264,11 @@ def test_file_of_a_wordpress_install_in_a_subfolder_is_restored_from_its_own_rel
     assert "/tags/6.7.1/wp-admin/index.php" in r.json()["source"]
     timeline = eng.get(f"/api/v1/ops/service-desk/{t['id']}").json()["messages"]
     assert sum(1 for m in timeline if m["body"].startswith("Assigned to")) == 1
+
+
+def test_compare_file_command_reports_identical_bytes(hacked, capsys):
+    from app import cli
+
+    cli.main(["compare-file", "alpha-site.com", "wp-admin/index.php"])
+    out = capsys.readouterr().out
+    assert "IDENTICAL" in out and "via SFTP (real)" in out

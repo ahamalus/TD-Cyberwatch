@@ -13,6 +13,7 @@
     python -m app.cli send-test-email ADDRESS   # send one email now and explain any SMTP failure
     python -m app.cli rules-selftest            # run the YARA rules over official WordPress releases now
     python -m app.cli anonymise-user EMAIL REASON...  # erasure request (NDPA): de-identify a user account
+    python -m app.cli compare-file HOST PATH    # read one file via monitoring and via remediation SFTP; show differences
     python -m app.cli availability-report HOST [DAYS]  # why a website's availability checks fail (by hour/cause)
     python -m app.cli ensure-app-role           # create/repair the restricted runtime database login
                                                 # (CW_APP_DB_USER / CW_APP_DB_PASSWORD; run as the owner)
@@ -350,6 +351,64 @@ def cmd_health() -> None:
         sys.exit(1)
 
 
+def cmd_compare_file(host: str, path: str) -> None:
+    """Diagnose fingerprint mismatches: is what the monitoring connector reads byte-identical to the file?"""
+    import hashlib
+
+    from app.connectors.base import safe_join
+    from app.connectors.registry import build_connector
+    from app.models import (
+        ConnectorDefinition,
+        FileInventoryItem,
+        HostingAccount,
+        HostingCredential,
+        RemediationCredential,
+        Website,
+    )
+    from app.services import remediation
+
+    host = host.lower().removeprefix("https://").removeprefix("http://").strip("/")
+    with platform_session() as db:
+        w = db.execute(select(Website).where(Website.hostname.ilike(f"%{host}%"))).scalars().first()
+        if w is None or w.hosting_account_id is None:
+            sys.exit(f"No website with hosting matches {host!r}.")
+        a = db.get(HostingAccount, w.hosting_account_id)
+        cred = db.execute(select(HostingCredential).where(HostingCredential.hosting_account_id == a.id)).scalar_one_or_none()
+        mon = build_connector(a, cred, db.get(ConnectorDefinition, a.connector_type))
+        with mon.open_file_source(safe_join(a.root_path, w.document_root or ".")) as src:
+            via_monitor = b"".join(src.read_chunks(path))
+        item = db.execute(select(FileInventoryItem).where(FileInventoryItem.website_id == w.id,
+                                                          FileInventoryItem.path == path)).scalar_one_or_none()
+        rcred = db.execute(select(RemediationCredential).where(
+            RemediationCredential.hosting_account_id == a.id)).scalar_one_or_none()
+        via_sftp = None
+        if rcred:
+            with remediation.open_writer(rcred, remediation.website_root(rcred, w)) as wr:
+                via_sftp = wr.read(path)
+    sha = lambda b: hashlib.sha256(b).hexdigest()  # noqa: E731
+    print(f"Website: {w.name} ({a.connector_type}); file: {path}")
+    print(f"  last scan recorded : {item.sha256 if item else '(not in inventory)'}  size {item.size if item else '-'}")
+    print(f"  via {a.connector_type:<15}: {sha(via_monitor)}  size {len(via_monitor)}")
+    if via_sftp is None:
+        print("  via SFTP           : (no remediation access configured; cannot compare with the real bytes)")
+        return
+    print(f"  via SFTP (real)    : {sha(via_sftp)}  size {len(via_sftp)}  non-ASCII bytes: {sum(b > 127 for b in via_sftp)}")
+    if via_monitor == via_sftp:
+        print("  IDENTICAL: the monitoring read is byte-exact. If the scan recorded a different value, the file changed.")
+        return
+    first = next((i for i, (x, y) in enumerate(zip(via_monitor, via_sftp, strict=False)) if x != y), min(len(via_monitor), len(via_sftp)))
+    print(f"  DIFFERENT from byte {first}:")
+    print(f"    monitoring: {via_monitor[max(0, first - 20):first + 20]!r}")
+    print(f"    real file : {via_sftp[max(0, first - 20):first + 20]!r}")
+    if via_monitor.decode("latin-1").encode("utf-8") == via_sftp:
+        print("  CAUSE: the control panel returned the text already decoded (no ISO-8859-1 conversion), so "
+              "non-ASCII characters were re-encoded wrongly.")
+    elif via_monitor == via_sftp.replace(b"\r\n", b"\n"):
+        print("  CAUSE: the control panel converted Windows line endings (CRLF) to LF.")
+    elif len(via_monitor) < len(via_sftp) and via_sftp.startswith(via_monitor):
+        print("  CAUSE: the control panel returned a truncated file.")
+
+
 def cmd_availability_report(host: str, days: int = 3) -> None:
     """Failed availability checks for one website, grouped by cause, plus a live check now."""
     from datetime import timedelta
@@ -412,6 +471,8 @@ def main(argv: list[str]) -> None:
         cmd_health()
     elif cmd == "send-test-email" and len(args) == 1:
         cmd_send_test_email(args[0])
+    elif cmd == "compare-file" and len(args) == 2:
+        cmd_compare_file(args[0], args[1])
     elif cmd == "availability-report" and args:
         cmd_availability_report(args[0], int(args[1]) if len(args) > 1 else 3)
     elif cmd == "ensure-app-role":
