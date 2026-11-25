@@ -365,3 +365,115 @@ def discoveries(account_id: uuid.UUID, ctx: TenantContext = Depends(require(P.HO
                       .order_by(CapabilityDiscovery.performed_at.desc()).limit(20)).scalars()
     return [{"id": str(r.id), "performed_at": r.performed_at, "success": r.success,
              "connector_version": r.connector_version, "profile": r.profile, "diagnostics": r.diagnostics} for r in rows]
+
+
+# ---------------------------------------------------------------- remediation access (write)
+
+
+class RemediationAccessIn(BaseModel):
+    hostname: str | None = Field(default=None, max_length=253)  # default: the monitoring connection's host
+    port: int = Field(default=22, ge=1, le=65535)
+    username: str = Field(min_length=1, max_length=120)
+    root_path: str = Field(min_length=1, max_length=1024)  # absolute path of the monitored folder over SFTP
+    credential: CredentialIn
+
+
+def _remediation_out(cred) -> dict:
+    if cred is None:
+        return {"configured": False}
+    return {"configured": True, "hostname": cred.hostname, "port": cred.port, "username": cred.username,
+            "root_path": cred.root_path, "kind": cred.kind, "credential_fingerprint": cred.display_fingerprint,
+            "host_key_fingerprint": cred.host_key_fingerprint, "status": cred.status,
+            "last_tested_at": cred.last_tested_at, "last_result": cred.last_result, "updated_at": cred.updated_at}
+
+
+def _remediation_cred(db: Session, a: HostingAccount):
+    from app.models import RemediationCredential
+
+    return db.execute(select(RemediationCredential).where(RemediationCredential.hosting_account_id == a.id)).scalar_one_or_none()
+
+
+@router.get("/{account_id}/remediation-access")
+def get_remediation_access(account_id: uuid.UUID, ctx: TenantContext = Depends(require(P.HOSTING_READ)),
+                           db: Session = Depends(get_db)) -> dict:
+    return _remediation_out(_remediation_cred(db, get_account(db, ctx, account_id)))
+
+
+@router.put("/{account_id}/remediation-access")
+def set_remediation_access(account_id: uuid.UUID, body: RemediationAccessIn,
+                           ctx: TenantContext = Depends(require(P.HOSTING_MANAGE)), db: Session = Depends(get_db)) -> dict:
+    """Give Trust Data WRITE access (SFTP) for remediation. Separate from the read-only monitoring credential;
+    used only for changes made within a request the customer has authorised."""
+    from app.models import RemediationCredential
+    from app.services import remediation
+
+    if ctx.grant is not None:
+        raise ValidationFailed("Only the customer can give write access.")
+    a = get_account(db, ctx, account_id)
+    if body.credential.kind not in ("password", "private_key"):
+        raise ValidationFailed("Remediation access uses SFTP: a password or SSH private key.")
+    if body.credential.kind == "private_key":
+        from app.connectors.base import ConnectorError
+        from app.connectors.sftp import load_private_key
+
+        try:
+            load_private_key(body.credential.value, body.credential.passphrase)
+        except ConnectorError as exc:
+            raise ValidationFailed(exc.message) from exc
+    try:
+        hostname = normalise_hostname(body.hostname or a.hostname)
+    except TargetNotAllowed as exc:
+        raise ValidationFailed(str(exc)) from exc
+    if body.port not in get_settings().allowed_sftp_ports:
+        raise ValidationFailed(f"Port {body.port} is not permitted for SFTP. Allowed: {get_settings().allowed_sftp_ports}.")
+    root = body.root_path.strip()
+    if not root.startswith("/") or "\x00" in root or ".." in root.split("/") or root.rstrip("/") == "":
+        raise ValidationFailed("Enter the absolute path of the website folder, e.g. /home/account/public_html.")
+    cred = _remediation_cred(db, a)
+    if cred is None:
+        cred = RemediationCredential(tenant_id=a.tenant_id, hosting_account_id=a.id, created_by=ctx.user.id)
+        db.add(cred)
+    cred.hostname, cred.port, cred.username, cred.root_path = hostname, body.port, body.username, "/" + root.strip("/")
+    cred.host_key_fingerprint, cred.status, cred.last_result = None, "untested", None  # new login: trust anew
+    remediation.store_secret(cred, SecretMaterial(kind=body.credential.kind, value=body.credential.value,
+                                                  passphrase=body.credential.passphrase))
+    cred.display_fingerprint = fingerprint(body.credential.value.encode())
+    db.flush()
+    ok, message = remediation.test_access(db, cred, a)
+    audit.record(db, "hosting.remediation_access_set", actor=ctx.actor(), tenant_id=ctx.tenant_id,
+                 target_type="hosting_account", target_id=a.id,
+                 details={"hostname": hostname, "port": body.port, "username": body.username, "root": cred.root_path,
+                          "credential_kind": body.credential.kind, "test": "ok" if ok else message})
+    db.commit()
+    return _remediation_out(cred)
+
+
+@router.post("/{account_id}/remediation-access/test")
+def test_remediation_access(account_id: uuid.UUID, ctx: TenantContext = Depends(require(P.HOSTING_MANAGE)),
+                            db: Session = Depends(get_db)) -> dict:
+    from app.services import remediation
+
+    a = get_account(db, ctx, account_id)
+    cred = _remediation_cred(db, a)
+    if cred is None:
+        raise NotFound("No remediation access is set up for this connection.")
+    remediation.test_access(db, cred, a)
+    audit.record(db, "hosting.remediation_access_tested", actor=ctx.actor(), tenant_id=ctx.tenant_id,
+                 target_type="hosting_account", target_id=a.id, details={"status": cred.status})
+    db.commit()
+    return _remediation_out(cred)
+
+
+@router.delete("/{account_id}/remediation-access")
+def delete_remediation_access(account_id: uuid.UUID, ctx: TenantContext = Depends(require(P.HOSTING_MANAGE)),
+                              db: Session = Depends(get_db)) -> dict:
+    if ctx.grant is not None:
+        raise ValidationFailed("Only the customer can remove write access.")
+    a = get_account(db, ctx, account_id)
+    cred = _remediation_cred(db, a)
+    if cred is not None:
+        db.delete(cred)
+        audit.record(db, "hosting.remediation_access_removed", actor=ctx.actor(), tenant_id=ctx.tenant_id,
+                     target_type="hosting_account", target_id=a.id)
+        db.commit()
+    return {"configured": False}

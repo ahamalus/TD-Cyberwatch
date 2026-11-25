@@ -95,6 +95,9 @@ class Settings(BaseSettings):
     vendor_checksums_enabled: bool = True
     wordpress_api_base: str = "https://api.wordpress.org"
     wordpress_downloads_base: str = "https://downloads.wordpress.org"
+    # Official file sources for remediation (raw files from the release tags; always checksum-verified).
+    wordpress_core_svn_base: str = "https://core.svn.wordpress.org"
+    wordpress_plugins_svn_base: str = "https://plugins.svn.wordpress.org"
 
     # Off-server copies of the audit-trail anchor (JSON list, e.g. '["audit@yourcompany.com"]'). Use a mailbox
     # that server administrators cannot alter. Nightly backups also store anchors (see services/audit_anchor.py).

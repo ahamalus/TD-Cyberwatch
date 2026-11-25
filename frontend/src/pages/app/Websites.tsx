@@ -298,7 +298,7 @@ export function NewWebsitePage() {
                 ]}
               />
               <Text size="xs" c="dimmed">
-                Monitoring is read-only. CyberWatch never modifies, deletes or quarantines your files.
+                Monitoring is read-only: it never modifies, deletes or quarantines your files. Files are changed only if you order a cleanup, give separate write access and authorise the work.
               </Text>
               {error && (
                 <Alert color="threat" variant="light" role="alert">

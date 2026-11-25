@@ -26,6 +26,17 @@
 | Config | Production start refused with debug, dev DB password, insecure cookies, private outbound overrides, or disabled staff MFA | `core/config.py` |
 | Containers | Non-root users, read-only root FS, `no-new-privileges`, all capabilities dropped, DB/Redis on internal-only network | `docker-compose.yml` |
 
+## Remediation (write access)
+
+Monitoring credentials are read-only and are never used to write. Remediation uses a **separate** SFTP
+credential per hosting connection that only the customer can add or remove (hosting management is not a
+grantable permission), encrypted with its own associated data so it can never be decrypted as a monitoring
+credential. File changes are allowed only to the engineer assigned to an open, customer-authorised request while
+their access grant is active. Each change checks the file's fingerprint against the last scan, keeps an AES-GCM
+encrypted backup (associated data bound to the tenant and the action; deleted after 90 days), writes atomically,
+reads back to verify, and is audited; official files must match wordpress.org's published checksums. No command
+is ever run on a customer server. Paths are confined to the website folder; symbolic links are never followed.
+
 ## Threat model (STRIDE summary)
 
 | Threat | Scenario | Mitigation | Residual risk |

@@ -52,3 +52,13 @@ def get(tenant_id: uuid.UUID, key: str) -> bytes:
     if not path.is_file():
         raise StorageError("Object not found.")
     return path.read_bytes()
+
+
+def delete(tenant_id: uuid.UUID, key: str) -> None:
+    if not key.startswith(f"{tenant_id}/"):
+        raise StorageError("Object does not belong to this tenant.")
+    root = _root()
+    path = (root / key).resolve()
+    if root not in path.parents:
+        raise StorageError("Invalid object key.")
+    path.unlink(missing_ok=True)

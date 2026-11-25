@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { Wordmark } from "../../components/ui";
 
 const CONTACT = "team@trustdata.ng";
-const UPDATED = "22 November 2026";
+const UPDATED = "25 November 2026";
 
 const PROCESSORS: [string, string, string, string][] = [
   ["Cloudflare, Inc.", "Secure network connection to the service (tunnel and web protection)", "All web traffic in transit (encrypted between your browser and Cloudflare, and between Cloudflare and our servers)", "Global network, including the United States"],
@@ -40,6 +40,7 @@ export function PrivacyPage() {
             <Table.Tr><Table.Td>Billing details (payer name and email, amounts, Paystack references)</Table.Td><Table.Td>Payments, invoices, refunds</Table.Td><Table.Td>Contract; legal obligation (tax records)</Table.Td></Table.Tr>
             <Table.Tr><Table.Td>WhatsApp number and your consent</Table.Td><Table.Td>WhatsApp alerts, only if you opt in</Table.Td><Table.Td>Consent (reply STOP or turn it off at any time)</Table.Td></Table.Tr>
             <Table.Tr><Table.Td>Website files and metadata from hosting you connect (paths, sizes, fingerprints, short excerpts of suspicious code)</Table.Td><Table.Td>Integrity and malware monitoring for your organisation</Table.Td><Table.Td>Processed on your organisation's instructions (contract)</Table.Td></Table.Tr>
+            <Table.Tr><Table.Td>Copies of files changed during a cleanup you order (encrypted)</Table.Td><Table.Td>Letting you undo any change we make</Table.Td><Table.Td>Processed on your organisation's instructions (contract); deleted after 90 days</Table.Td></Table.Tr>
           </Table.Tbody>
         </Table>
         <Text size="sm">

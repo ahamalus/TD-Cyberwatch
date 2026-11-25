@@ -80,6 +80,68 @@ export function ServiceDeskPage() {
   );
 }
 
+function FixFilesSection({ ticketId }: { ticketId: string }) {
+  const q = useQuery({ queryKey: ["desk-remediation", ticketId], queryFn: () => api.get<any>(`/ops/service-desk/${ticketId}/remediation`) });
+  const act = useMutation({
+    mutationFn: (b: { action: string; path: string; expected_sha256: string }) => api.post<any>(`/ops/service-desk/${ticketId}/remediation/actions`, b),
+    onSuccess: (a: any) => { q.refetch(); notifications.show({ color: "secure", title: a.action === "restore_genuine" ? "Official file restored" : "File quarantined", message: `${a.path}. A rescan has been queued.` }); },
+    onError: (e) => { q.refetch(); onError(e); },
+  });
+  const undo = useMutation({
+    mutationFn: (id: string) => api.post(`/ops/service-desk/${ticketId}/remediation/actions/${id}/undo`, {}),
+    onSuccess: () => { q.refetch(); notifications.show({ color: "secure", title: "Change undone", message: "The previous content is back." }); },
+    onError,
+  });
+  const d = q.data;
+  if (!d) return null;
+  return (
+    <Section title="Fix files" description="Restore official WordPress files (downloaded from wordpress.org and checksum-verified) or quarantine files that should not be there. A copy of every original is kept for undo; each change starts a rescan.">
+      {d.blocked ? <Alert color="gray" variant="light">{d.blocked}</Alert>
+        : !d.access.configured ? <Alert color="amber" variant="light" title="No remediation access">Ask the customer to set up remediation access on the website's hosting connection (Hosting → connection → Remediation access).</Alert>
+        : d.access.status !== "ok" ? <Alert color="threat" variant="light" title="Remediation access is not working">{d.access.last_result ?? "Ask the customer to test it again."}</Alert>
+        : d.candidates.length === 0 ? <Text size="sm" c="dimmed">No files need fixing according to the last scan.</Text> : (
+          <Stack gap="xs">
+            {d.candidates.map((c: any) => (
+              <Card key={c.path} p="xs" shadow="none" withBorder>
+                <Group justify="space-between" wrap="nowrap" align="flex-start">
+                  <Box miw={0}>
+                    <Text size="sm" className="cw-mono" style={{ wordBreak: "break-all" }}>{c.path}</Text>
+                    <Text size="xs" c="dimmed">{c.reasons.join(" · ")}</Text>
+                    {c.last_action && <Text size="xs" c="var(--mantine-color-secure-text)">{humanize(c.last_action.action)} {fmtRelative(c.last_action.at)}</Text>}
+                  </Box>
+                  <Group gap={4} wrap="nowrap">
+                    {c.actions.includes("restore_genuine") && (
+                      <Button size="compact-xs" loading={act.isPending && act.variables?.path === c.path}
+                        onClick={() => window.confirm(`Replace ${c.path} with the official ${c.vendor_ref} version? A copy of the current file is kept.`) && act.mutate({ action: "restore_genuine", path: c.path, expected_sha256: c.sha256 })}>Restore official</Button>
+                    )}
+                    {c.actions.includes("quarantine") && (
+                      <Button size="compact-xs" color="threat" loading={act.isPending && act.variables?.path === c.path}
+                        onClick={() => window.confirm(`Remove ${c.path} from the server? An encrypted copy is kept so it can be undone.`) && act.mutate({ action: "quarantine", path: c.path, expected_sha256: c.sha256 })}>Quarantine</Button>
+                    )}
+                  </Group>
+                </Group>
+              </Card>
+            ))}
+          </Stack>
+        )}
+      {d.actions.length > 0 && (
+        <Stack gap={4} mt="md">
+          <Text size="sm" fw={700}>Changes made</Text>
+          {d.actions.map((a: any) => (
+            <Group key={a.id} justify="space-between" wrap="nowrap" gap="xs">
+              <Text size="xs" style={{ wordBreak: "break-all" }}>
+                <Badge size="xs" color={a.status === "done" ? "secure" : a.status === "undone" ? "gray" : "threat"} mr={6}>{humanize(a.status)}</Badge>
+                {humanize(a.action)} <span className="cw-mono">{a.path}</span> · {a.performed_by} · {fmtRelative(a.performed_at)}{a.error ? ` · ${a.error}` : ""}
+              </Text>
+              {a.can_undo && !d.blocked && <Button size="compact-xs" variant="subtle" onClick={() => window.confirm(`Put ${a.path} back as it was before?`) && undo.mutate(a.id)}>Undo</Button>}
+            </Group>
+          ))}
+        </Stack>
+      )}
+    </Section>
+  );
+}
+
 export function DeskTicketPage() {
   const { ticketId } = useParams();
   const me = useMe();
@@ -136,6 +198,7 @@ export function DeskTicketPage() {
                 )}
               </Stack>
             </Section>
+            {d.is_service_request && <FixFilesSection ticketId={d.id} />}
             {d.is_service_request && (
               <Section title="Report for the customer" description="Shown on the customer's request page. Required before resolving a service request.">
                 <Stack>

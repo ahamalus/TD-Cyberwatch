@@ -380,3 +380,42 @@ def approve_remediation(ticket_id: uuid.UUID, body: RemediationApprovalIn,
                         body=f"The customer authorised the work within this scope:\n{body.scope}")
     db.commit()
     return ticket_dict(db, t, with_messages=True)
+
+
+@router.get("/tickets/{ticket_id}/remediation")
+def ticket_remediation(ticket_id: uuid.UUID, ctx: TenantContext = Depends(require(P.SUPPORT_READ)),
+                       db: Session = Depends(get_db)) -> dict:
+    """Every change Trust Data made to your files for this request, each with an undo."""
+    from app.models import RemediationAction
+    from app.services import remediation
+
+    t = _ticket(db, ctx, ticket_id)
+    rows = db.execute(select(RemediationAction).where(RemediationAction.ticket_id == t.id)
+                      .order_by(RemediationAction.performed_at.desc())).scalars()
+    return {"actions": [remediation.action_dict(db, a) for a in rows]}
+
+
+@router.post("/tickets/{ticket_id}/remediation/{action_id}/undo")
+def ticket_remediation_undo(ticket_id: uuid.UUID, action_id: uuid.UUID,
+                            ctx: TenantContext = Depends(require(P.MANAGED_SERVICE_APPROVE)),
+                            db: Session = Depends(get_db)) -> dict:
+    """The customer can put any file back the way it was."""
+    from app.models import RemediationAction
+    from app.services import remediation
+
+    if ctx.grant is not None:
+        raise ValidationFailed("Staff undo changes from the service desk.")
+    t = _ticket(db, ctx, ticket_id)
+    a = db.execute(select(RemediationAction).where(RemediationAction.id == action_id,
+                                                   RemediationAction.ticket_id == t.id)).scalar_one_or_none()
+    if a is None:
+        raise NotFound("Change not found.")
+    try:
+        remediation.undo(db, a, actor_user_id=ctx.user.id, actor=ctx.actor())
+    except remediation.RemediationError as exc:
+        raise ValidationFailed(exc.message, code=exc.code) from exc
+    service_desk.add_message(db, t, ctx.user.id, f"Customer undid the change to {a.path}.", staff=False, kind="status")
+    service_desk.notify(db, t, to_customer=False, key=f"undo:{a.id}", subject=f"Customer undid a change: {t.subject}",
+                        body=f"{ctx.user.full_name or ctx.user.email} restored {a.path} to its previous content.")
+    db.commit()
+    return remediation.action_dict(db, a)

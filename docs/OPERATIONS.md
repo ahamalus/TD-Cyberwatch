@@ -167,6 +167,27 @@ engineer automatically creates a 14-day access grant for that engineer (recorded
 customer's authorisation as its basis); it is revoked when the request is closed or cancelled, or when the
 engineer is unassigned. Set `CW_SUPPORT_EMAILS` to a shared inbox to be told about new requests as well.
 
+### Fixing files (remediation)
+
+For WordPress sites, the engineer can fix files from the request's **Fix files** panel instead of editing the
+server by hand:
+- **Restore official**: a core or plugin file that differs from the official release is replaced with the
+  official copy from wordpress.org, which is accepted only if it matches the published checksum.
+- **Quarantine**: a file that should not exist (planted in `wp-admin`/`wp-includes`/a plugin, or flagged by the
+  malware scan) is removed from the server. Core and plugin files are never quarantined (restore them instead).
+
+Preconditions, all enforced by the API: the customer has set up **Remediation access** on the hosting connection
+(a separate SFTP login with write permission; the monitoring login stays read-only); the request is open and
+authorised; you are its assigned engineer with an active access grant; and the file still has the fingerprint
+shown (if it changed on the server since the last scan, nothing is changed: rescan and review again).
+
+Every change keeps an encrypted copy of the original for 90 days, is read back to confirm, is written to the
+audit trail and the request timeline, and starts a rescan. **Undo** (engineer, or the customer's owner on the
+request page) puts the original back, but only if the file was not changed again in the meantime.
+
+Not automated yet (do by hand, record in the report): database cleanup (injected posts/options, rogue admin
+users), password and WordPress key rotation, custom theme files, and anything on non-WordPress sites.
+
 ## Investigating a website that keeps failing availability checks
 ```
 sudo -u cyberwatch docker compose exec api python -m app.cli availability-report example.com 3

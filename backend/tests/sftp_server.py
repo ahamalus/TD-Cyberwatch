@@ -29,6 +29,10 @@ class ServerState:
     allow_exec: bool = False
     exec_commands: list[str] = field(default_factory=list)
     lie_about_hashes: bool = False  # a compromised/broken server returning wrong digests
+    # Remediation tests: writes allowed (only for logins in write_users, so the monitoring login stays read-only).
+    write_users: set[str] = field(default_factory=set)
+    writes: list[str] = field(default_factory=list)
+    extra_logins: dict[str, str] = field(default_factory=dict)  # username -> password
 
 
 class _Handle(SFTPHandle):
@@ -40,6 +44,14 @@ class _SFTP(SFTPServerInterface):
     def __init__(self, server, state: ServerState, *args, **kwargs):
         super().__init__(server, *args, **kwargs)
         self.state = state
+        self.user = getattr(server, "user", None)
+
+    def _may_write(self, path: str) -> bool:
+        if self.user in self.state.write_users and not self._denied(path):
+            self.state.writes.append(path)
+            return True
+        self.state.write_attempts.append(path)
+        return False
 
     def _local(self, path: str) -> str:
         path = os.path.normpath("/" + path.lstrip("/"))
@@ -81,8 +93,17 @@ class _SFTP(SFTPServerInterface):
 
     def open(self, path, flags, attr):
         if flags & (os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND):
-            self.state.write_attempts.append(path)
-            return SFTP_PERMISSION_DENIED
+            if not self._may_write(path):
+                return SFTP_PERMISSION_DENIED
+            try:
+                fd = os.open(self._local(path), flags | getattr(os, "O_BINARY", 0), 0o644)
+                f = os.fdopen(fd, "wb" if not flags & os.O_RDWR else "r+b")
+            except OSError as e:
+                return SFTPServer.convert_errno(e.errno)
+            h = _Handle(flags)
+            h.filename = self._local(path)
+            h.writefile = f
+            return h
         if self._denied(path):
             return SFTP_PERMISSION_DENIED
         try:
@@ -101,12 +122,27 @@ class _SFTP(SFTPServerInterface):
             return SFTPServer.convert_errno(e.errno)
 
     def remove(self, path):
-        self.state.write_attempts.append(path)
-        return SFTP_PERMISSION_DENIED
+        if not self._may_write(path):
+            return SFTP_PERMISSION_DENIED
+        try:
+            os.remove(self._local(path))
+            return SFTP_OK
+        except OSError as e:
+            return SFTPServer.convert_errno(e.errno)
 
     def rename(self, oldpath, newpath):
-        self.state.write_attempts.append(oldpath)
-        return SFTP_PERMISSION_DENIED
+        if not self._may_write(oldpath):
+            return SFTP_PERMISSION_DENIED
+        if os.path.exists(self._local(newpath)):
+            return SFTP_FAILURE  # plain SFTP rename never overwrites
+        os.rename(self._local(oldpath), self._local(newpath))
+        return SFTP_OK
+
+    def posix_rename(self, oldpath, newpath):
+        if not self._may_write(oldpath):
+            return SFTP_PERMISSION_DENIED
+        os.replace(self._local(oldpath), self._local(newpath))
+        return SFTP_OK
 
     def mkdir(self, path, attr):
         self.state.write_attempts.append(path)
@@ -117,8 +153,11 @@ class _SFTP(SFTPServerInterface):
         return SFTP_PERMISSION_DENIED
 
     def chattr(self, path, attr):
-        self.state.write_attempts.append(path)
-        return SFTP_PERMISSION_DENIED
+        if not self._may_write(path):
+            return SFTP_PERMISSION_DENIED
+        if attr.st_mode is not None:
+            os.chmod(self._local(path), attr.st_mode & 0o7777)
+        return SFTP_OK
 
     def symlink(self, target_path, path):
         self.state.write_attempts.append(path)
@@ -128,9 +167,12 @@ class _SFTP(SFTPServerInterface):
 class _Server(paramiko.ServerInterface):
     def __init__(self, state: ServerState):
         self.state = state
+        self.user: str | None = None
 
     def check_auth_password(self, username, password):
-        if username == self.state.username and password == self.state.password:
+        if (username == self.state.username and password == self.state.password) or \
+                (username in self.state.extra_logins and self.state.extra_logins[username] == password):
+            self.user = username
             return paramiko.AUTH_SUCCESSFUL
         return paramiko.AUTH_FAILED
 

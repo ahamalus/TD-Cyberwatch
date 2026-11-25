@@ -30,6 +30,9 @@ from app.services.entitlements import effective
 KEEP_RECENT_SNAPSHOTS = 5
 
 
+REMEDIATION_BACKUP_DAYS = 90
+
+
 def run_retention(db: Session) -> dict[str, int]:
     stats = {"snapshots": 0, "availability_checks": 0, "tls_checks": 0, "file_changes": 0, "notifications": 0,
              "login_events": 0, "sessions": 0}
@@ -41,6 +44,18 @@ def run_retention(db: Session) -> dict[str, int]:
     # Heartbeats of worker containers replaced by later deployments.
     stats["worker_heartbeats"] = db.execute(
         delete(WorkerHeartbeat).where(WorkerHeartbeat.last_seen_at < now - timedelta(days=7))).rowcount or 0
+    # Encrypted copies of files changed by remediation: kept for undo for 90 days, then deleted (the record of
+    # the change stays; only undo is no longer possible).
+    stats["remediation_backups"] = 0
+    from app.models import RemediationAction
+    from app.services import storage
+
+    for a in db.execute(select(RemediationAction).where(
+            RemediationAction.backup_key.is_not(None),
+            RemediationAction.performed_at < now - timedelta(days=REMEDIATION_BACKUP_DAYS))).scalars():
+        storage.delete(a.tenant_id, a.backup_key)
+        a.backup_key, a.backup_nonce = None, None
+        stats["remediation_backups"] += 1
     ended = now - timedelta(days=s.ended_session_days)
     stats["sessions"] = db.execute(
         delete(UserSession).where((UserSession.expires_at < ended) | (UserSession.revoked_at < ended))).rowcount or 0

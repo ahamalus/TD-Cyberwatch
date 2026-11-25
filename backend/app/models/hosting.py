@@ -149,3 +149,59 @@ class CapabilityDiscovery(UUIDPk, Base):
     diagnostics: Mapped[list] = mapped_column(JSONB, default=list, nullable=False)
 
     __table_args__ = (Index("ix_capdisc_account_time", "hosting_account_id", "performed_at"),)
+
+
+class RemediationCredential(UUIDPk, Base):
+    """Optional WRITE access to a hosting account (SFTP), used only by remediation, never by monitoring.
+
+    Separate from the monitoring credential so that customers who do not buy remediation keep a purely
+    read-only connection. Encrypted like other credentials, with its own associated data, so a monitoring
+    ciphertext can never be decrypted as a remediation one or vice versa."""
+
+    __tablename__ = "remediation_credentials"
+
+    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
+    hosting_account_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("hosting_accounts.id", ondelete="CASCADE"), nullable=False, unique=True)
+    hostname: Mapped[str] = mapped_column(String(253), nullable=False)
+    port: Mapped[int] = mapped_column(Integer, nullable=False)
+    username: Mapped[str] = mapped_column(String(120), nullable=False)
+    # Absolute SFTP path of the same folder as the monitoring connection's root.
+    root_path: Mapped[str] = mapped_column(String(1024), nullable=False)
+    kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    key_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    nonce: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    ciphertext: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    display_fingerprint: Mapped[str] = mapped_column(String(80), nullable=False)
+    host_key_fingerprint: Mapped[str | None] = mapped_column(String(128))
+    status: Mapped[str] = mapped_column(String(16), default="untested", nullable=False)  # untested | ok | failed
+    last_tested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_result: Mapped[str | None] = mapped_column(Text)
+    created_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class RemediationAction(UUIDPk, Base):
+    """One change made to a customer's file, with the encrypted copy of what was there before (for undo)."""
+
+    __tablename__ = "remediation_actions"
+
+    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
+    ticket_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("support_tickets.id", ondelete="SET NULL"))
+    website_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("websites.id", ondelete="CASCADE"), nullable=False)
+    path: Mapped[str] = mapped_column(String(1024), nullable=False)
+    action: Mapped[str] = mapped_column(String(24), nullable=False)  # restore_genuine | quarantine
+    status: Mapped[str] = mapped_column(String(16), nullable=False)  # done | failed | undone
+    before_sha256: Mapped[str | None] = mapped_column(String(64))
+    after_sha256: Mapped[str | None] = mapped_column(String(64))
+    backup_key: Mapped[str | None] = mapped_column(String(300))
+    backup_key_id: Mapped[str | None] = mapped_column(String(64))
+    backup_nonce: Mapped[bytes | None] = mapped_column(LargeBinary)
+    backup_size: Mapped[int | None] = mapped_column(Integer)
+    source: Mapped[str | None] = mapped_column(Text)
+    error: Mapped[str | None] = mapped_column(Text)
+    performed_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    performed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    undone_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    undone_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

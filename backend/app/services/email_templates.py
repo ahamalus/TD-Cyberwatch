@@ -117,7 +117,7 @@ def _incident(subject: str, p: dict[str, Any]) -> str:
         f'{action}'
         f'{_button(str(p["link"]), "View incident") if p.get("link") else ""}'
         f'<p style="margin:0 0 18px 0;{FONT}font-size:12px;line-height:1.5;color:{MUTED};">Findings come from automated '
-        f'monitoring and may need human verification. CyberWatch never changes files on your server.</p></div>'
+        f'monitoring and may need human verification. Monitoring never changes files on your server.</p></div>'
     )
     return _frame(subject, str(p.get("summary", ""))[:140], inner)
 

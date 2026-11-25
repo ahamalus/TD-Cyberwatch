@@ -7,6 +7,8 @@ from app.models.hosting import (
     ConnectorDefinition,
     HostingAccount,
     HostingCredential,
+    RemediationAction,
+    RemediationCredential,
 )
 from app.models.identity import (
     ApiToken,
@@ -92,6 +94,8 @@ __all__ = [
     "FileSnapshotEntry",
     "MalwareVerdict",
     "LogCursor",
+    "RemediationAction",
+    "RemediationCredential",
     "RuleSelftest",
     "SoftwareInstall",
     "VendorChecksums",

@@ -433,6 +433,36 @@ export function SupportPage() {
   );
 }
 
+function FileChangesSection({ ticketId }: { ticketId: string }) {
+  const tid = useTenantId();
+  const can = useCan();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const q = useQuery({ queryKey: ["ticket-remediation", tid, ticketId], queryFn: () => api.get<{ actions: any[] }>(`/tenants/${tid}/tickets/${ticketId}/remediation`) });
+  const undo = useMutation({
+    mutationFn: (id: string) => api.post(`/tenants/${tid}/tickets/${ticketId}/remediation/${id}/undo`, {}),
+    onSuccess: () => { q.refetch(); notifications.show({ color: "secure", title: "Change undone", message: "The file is back as it was." }); },
+    onError: (e) => notifications.show({ color: "threat", title: "Not undone", message: errorMessage(e) }),
+  });
+  if (!q.data?.actions.length) return null;
+  return (
+    <Section title="Changes made to your files" description="Every change Trust Data made for this request. A copy of each original file is kept, so you can put it back.">
+      <Stack gap="xs">
+        {q.data.actions.map((a) => (
+          <Group key={a.id} justify="space-between" wrap="nowrap" align="flex-start">
+            <Box miw={0}>
+              <Text size="sm" style={{ wordBreak: "break-all" }}><b>{a.action === "restore_genuine" ? "Restored official version" : "Quarantined (removed)"}</b> · <span className="cw-mono">{a.path}</span></Text>
+              <Text size="xs" c="dimmed">{a.performed_by} · {fmtDateTime(a.performed_at)}{a.status === "undone" ? ` · undone ${fmtDateTime(a.undone_at)} by ${a.undone_by}` : a.status === "failed" ? ` · failed: ${a.error}` : ""}</Text>
+            </Box>
+            {a.can_undo && can("managed_service:approve") && (
+              <ConfirmButton size="xs" variant="default" title="Undo this change?" message={`${a.path} will be put back exactly as it was before this change.`} confirmLabel="Undo" onConfirm={() => undo.mutateAsync(a.id)}>Undo</ConfirmButton>
+            )}
+          </Group>
+        ))}
+      </Stack>
+    </Section>
+  );
+}
+
 export function TicketPage() {
   const tid = useTenantId();
   const { ticketId } = useParams();
@@ -479,6 +509,7 @@ export function TicketPage() {
               </Stack>
             </Section>
           )}
+          {d.is_service_request && <FileChangesSection ticketId={d.id} />}
           <Section title="Conversation">
             <Stack>
               {d.messages?.map((m, i) => m.kind === "status" ? (

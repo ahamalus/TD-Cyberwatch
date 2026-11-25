@@ -323,6 +323,98 @@ function LogDirectoriesSection({ account, canEdit, onSaved }: { account: Hosting
   );
 }
 
+interface RemediationAccess {
+  configured: boolean;
+  hostname?: string;
+  port?: number;
+  username?: string;
+  root_path?: string;
+  kind?: string;
+  credential_fingerprint?: string;
+  host_key_fingerprint?: string | null;
+  status?: string;
+  last_tested_at?: string | null;
+  last_result?: string | null;
+}
+
+/** Optional WRITE access used only for cleanup work the customer authorises. Monitoring stays read-only. */
+function RemediationAccessSection({ account, canEdit }: { account: HostingAccount; canEdit: boolean }) {
+  const tid = useTenantId();
+  const url = `/tenants/${tid}/hosting-accounts/${account.id}/remediation-access`;
+  const q = useQuery({ queryKey: ["remediation-access", account.id], queryFn: () => api.get<RemediationAccess>(url), retry: false });
+  const [editing, setEditing] = useState(false);
+  const [form, setForm] = useState({ hostname: "", port: 22 as number | string, username: "", root_path: "" });
+  const [kind, setKind] = useState("password");
+  const [secret, setSecret] = useState("");
+  const [passphrase, setPassphrase] = useState("");
+  const onError = (e: unknown) => notifications.show({ color: "threat", title: "Not saved", message: errorMessage(e) });
+  const save = useMutation({
+    mutationFn: () => api.put<RemediationAccess>(url, { hostname: form.hostname || null, port: Number(form.port), username: form.username,
+      root_path: form.root_path, credential: { kind, value: secret, passphrase: passphrase || null } }),
+    onSuccess: (r) => { setSecret(""); setPassphrase(""); setEditing(false); q.refetch();
+      notifications.show({ color: r.status === "ok" ? "secure" : "threat", title: r.status === "ok" ? "Write access confirmed" : "Test failed", message: r.last_result ?? "" }); },
+    onError,
+  });
+  const test = useMutation({ mutationFn: () => api.post<RemediationAccess>(`${url}/test`, {}), onSuccess: () => q.refetch(), onError });
+  const remove = useMutation({ mutationFn: () => api.del(url), onSuccess: () => q.refetch(), onError });
+  const d = q.data;
+  const startEdit = () => {
+    setForm({ hostname: d?.hostname ?? account.hostname, port: d?.port ?? 22, username: d?.username ?? account.username,
+      root_path: d?.root_path ?? (account.connector_type === "sftp" || account.connector_type === "ssh_readonly" ? account.root_path : `/home/${account.username}${account.root_path}`) });
+    setEditing(true);
+  };
+  return (
+    <Section title="Remediation access (optional)"
+      description="Only needed if Trust Data cleans up your site for you. A separate SFTP login with write permission, used only for work you authorise on a service request. Every change is recorded, a copy of the original is kept, and you can undo it. Your monitoring connection stays read-only.">
+      {q.isLoading ? <Loader size="sm" /> : d?.configured && !editing ? (
+        <Stack gap="xs">
+          <KeyValue items={[
+            ["Status", <Badge key="s" color={d.status === "ok" ? "secure" : d.status === "failed" ? "threat" : "gray"}>{d.status === "ok" ? "Write access confirmed" : humanize(d.status ?? "")}</Badge>],
+            ["Login", `${d.username}@${d.hostname}:${d.port}`],
+            ["Folder", <Code key="f">{d.root_path}</Code>],
+            ["Credential", `${humanize(d.kind ?? "")} · ${d.credential_fingerprint}`],
+            ["Host key", d.host_key_fingerprint ? <Text key="h" size="sm" className="cw-mono">{d.host_key_fingerprint}</Text> : "—"],
+            ["Last test", d.last_tested_at ? `${fmtRelative(d.last_tested_at)}: ${d.last_result ?? ""}` : "Not tested"],
+          ]} />
+          {canEdit && (
+            <Group gap="xs">
+              <Button size="xs" variant="default" onClick={() => test.mutate()} loading={test.isPending}>Test again</Button>
+              <Button size="xs" variant="default" onClick={startEdit}>Change</Button>
+              <ConfirmButton size="xs" color="threat" variant="subtle" title="Remove write access?" message="Trust Data will no longer be able to change files on this hosting account. Monitoring is not affected." confirmLabel="Remove" onConfirm={() => remove.mutateAsync()}>Remove</ConfirmButton>
+            </Group>
+          )}
+        </Stack>
+      ) : editing ? (
+        <Stack gap="sm">
+          <SimpleGrid cols={{ base: 1, sm: 2 }}>
+            <TextInput label="SFTP host" value={form.hostname} onChange={(e) => setForm({ ...form, hostname: e.currentTarget.value })} />
+            <NumberInput label="Port" value={form.port} onChange={(v) => setForm({ ...form, port: v })} min={1} max={65535} />
+            <TextInput label="Username" required value={form.username} onChange={(e) => setForm({ ...form, username: e.currentTarget.value })} autoComplete="off" />
+            <TextInput label="Website folder (absolute path)" required description={`The same folder that monitoring watches (${account.root_path}), as an SFTP path.`} value={form.root_path} onChange={(e) => setForm({ ...form, root_path: e.currentTarget.value })} />
+          </SimpleGrid>
+          <SegmentedControl value={kind} onChange={setKind} data={[{ value: "password", label: "Password" }, { value: "private_key", label: "SSH private key" }]} aria-label="Credential type" />
+          {kind === "private_key" ? (
+            <>
+              <Textarea label="SSH private key" required autosize minRows={4} value={secret} onChange={(e) => setSecret(e.currentTarget.value)} styles={{ input: { fontFamily: "monospace", fontSize: 12 } }} />
+              <PasswordInput label="Key passphrase (if any)" value={passphrase} onChange={(e) => setPassphrase(e.currentTarget.value)} autoComplete="off" />
+            </>
+          ) : <PasswordInput label="Password" required value={secret} onChange={(e) => setSecret(e.currentTarget.value)} autoComplete="new-password" />}
+          <Text size="xs" c="dimmed">Saving tests the login: CyberWatch checks the folder matches the monitored one, then creates and deletes one small test file.</Text>
+          <Group gap="xs">
+            <Button onClick={() => save.mutate()} loading={save.isPending} disabled={!form.username || !form.root_path.startsWith("/") || !secret}>Save and test</Button>
+            <Button variant="default" onClick={() => setEditing(false)}>Cancel</Button>
+          </Group>
+        </Stack>
+      ) : (
+        <Group justify="space-between">
+          <Text size="sm" c="dimmed">Not set up. Monitoring is read-only.</Text>
+          {canEdit && <Button size="xs" variant="light" onClick={startEdit}>Set up remediation access</Button>}
+        </Group>
+      )}
+    </Section>
+  );
+}
+
 export function HostingDetailPage() {
   const tid = useTenantId();
   const { accountId } = useParams();
@@ -403,6 +495,7 @@ export function HostingDetailPage() {
               />
             </Section>
             <LogDirectoriesSection account={h} canEdit={can("hosting:manage")} onSaved={() => q.refetch()} />
+            <RemediationAccessSection account={h} canEdit={can("hosting:manage")} />
             <Section title="Latest diagnostics" description="Sanitised results of the most recent connection test.">
               {!job ? (
                 <Text size="sm" c="dimmed">

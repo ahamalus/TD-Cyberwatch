@@ -1354,3 +1354,105 @@ def desk_staff(pc: PlatformContext = Depends(require_platform(P.OPS_SERVICE_DESK
                          .where(User.is_active.is_(True), PlatformRoleAssignment.role_key.in_(roles))
                          .order_by(User.full_name)).scalars().unique()
     return [{"id": str(u.id), "name": u.full_name or u.email, "email": u.email} for u in rows]
+
+
+# ---------------------------------------------------------------- remediation (staff)
+
+
+def _remediation_gate(db: Session, t, user_id: uuid.UUID) -> str | None:
+    """Why this person may not change files for this request now (None: they may)."""
+    if t.status in ("resolved", "closed", "cancelled"):
+        return "The request is not open."
+    if t.remediation_approved_at is None:
+        return "The customer has not authorised the work."
+    if t.assigned_to != user_id:
+        return "Only the engineer assigned to the request can change files."
+    g = db.get(ManagedServiceGrant, t.grant_id) if t.grant_id else None
+    if g is None or g.status != "active" or g.grantee_user_id != user_id or g.expires_at <= utcnow():
+        return "Your access grant for this organisation is not active."
+    if t.website_id is None:
+        return "The request is not linked to a website."
+    return None
+
+
+@ops.get("/service-desk/{ticket_id}/remediation")
+def desk_remediation(ticket_id: uuid.UUID, pc: PlatformContext = Depends(require_platform(P.OPS_SERVICE_DESK))) -> dict:
+    from app.models import RemediationAction, RemediationCredential
+    from app.services import remediation
+
+    db = pc.db
+    t = _desk_ticket(db, ticket_id)
+    blocked = _remediation_gate(db, t, pc.principal.user.id)
+    w = db.get(Website, t.website_id) if t.website_id else None
+    cred = db.execute(select(RemediationCredential).where(
+        RemediationCredential.hosting_account_id == w.hosting_account_id)).scalar_one_or_none() if w and w.hosting_account_id else None
+    actions = db.execute(select(RemediationAction).where(RemediationAction.ticket_id == t.id)
+                         .order_by(RemediationAction.performed_at.desc())).scalars()
+    return {
+        "blocked": blocked,
+        "access": {"configured": cred is not None, "status": cred.status if cred else None,
+                   "last_result": cred.last_result if cred else None},
+        # File lists are site data: shown only to the engineer allowed to act (grant holder).
+        "candidates": remediation.candidates(db, w, t.incident_ids or []) if (w and not blocked) else [],
+        "actions": [remediation.action_dict(db, a) for a in actions],
+    }
+
+
+class RemediationIn(BaseModel):
+    action: str = Field(pattern="^(restore_genuine|quarantine)$")
+    path: str = Field(min_length=1, max_length=1024)
+    expected_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+
+
+@ops.post("/service-desk/{ticket_id}/remediation/actions")
+def desk_remediate(ticket_id: uuid.UUID, body: RemediationIn,
+                   pc: PlatformContext = Depends(require_platform(P.OPS_SERVICE_DESK))) -> dict:
+    from app.services import remediation, service_desk
+
+    db = pc.db
+    t = _desk_ticket(db, ticket_id)
+    blocked = _remediation_gate(db, t, pc.principal.user.id)
+    if blocked:
+        raise ValidationFailed(blocked, code="not_permitted")
+    w = db.get(Website, t.website_id)
+    actor = pc.principal.actor(t.grant_id)
+    try:
+        a = remediation.perform(db, website=w, ticket_id=t.id, action=body.action, path=body.path,
+                                expected_sha256=body.expected_sha256, actor_user_id=pc.principal.user.id, actor=actor)
+    except remediation.RemediationError as exc:
+        db.commit()  # keep the audit entry of a refusal
+        raise ValidationFailed(exc.message, code=exc.code) from exc
+    verb = "Restored the official version of" if body.action == "restore_genuine" else "Quarantined (removed)"
+    if a.status == "done":
+        service_desk.add_message(db, t, pc.principal.user.id, f"{verb} {a.path}. A copy of the previous file is "
+                                 "kept so this can be undone.", staff=True, kind="status")
+    db.commit()
+    out = remediation.action_dict(db, a)
+    if a.status != "done":
+        raise ValidationFailed(f"The change failed: {a.error}", code="remediation_failed", details=out)
+    return out
+
+
+@ops.post("/service-desk/{ticket_id}/remediation/actions/{action_id}/undo")
+def desk_remediation_undo(ticket_id: uuid.UUID, action_id: uuid.UUID,
+                          pc: PlatformContext = Depends(require_platform(P.OPS_SERVICE_DESK))) -> dict:
+    from app.models import RemediationAction
+    from app.services import remediation, service_desk
+
+    db = pc.db
+    t = _desk_ticket(db, ticket_id)
+    blocked = _remediation_gate(db, t, pc.principal.user.id)
+    if blocked:
+        raise ValidationFailed(blocked, code="not_permitted")
+    a = db.execute(select(RemediationAction).where(RemediationAction.id == action_id,
+                                                   RemediationAction.ticket_id == t.id)).scalar_one_or_none()
+    if a is None:
+        raise NotFound("Change not found.")
+    try:
+        remediation.undo(db, a, actor_user_id=pc.principal.user.id, actor=pc.principal.actor(t.grant_id))
+    except remediation.RemediationError as exc:
+        raise ValidationFailed(exc.message, code=exc.code) from exc
+    service_desk.add_message(db, t, pc.principal.user.id, f"Undid the change to {a.path} (previous content restored).",
+                             staff=True, kind="status")
+    db.commit()
+    return remediation.action_dict(db, a)
