@@ -229,3 +229,38 @@ def test_backups_are_deleted_after_90_days_but_the_record_stays(hacked):
         storage.get(tenant, key)
     mine = h["sess"].get(f"/api/v1/tenants/{h['tid']}/tickets/{h['ticket']}/remediation").json()["actions"]
     assert mine[0]["can_undo"] is False
+
+
+def test_file_of_a_wordpress_install_in_a_subfolder_is_restored_from_its_own_release(
+        alice, sftp_server, wp_site, wporg_files):  # noqa: F811
+    """Production case: a second WordPress in e-adamawa/ inside the root install. Its readme.html must be looked
+    up as readme.html of that install, not as e-adamawa/readme.html of the root one."""
+    sess, tid = alice
+    sub = wp_site / "e-adamawa"
+    for rel, content in CORE_FILES.items():
+        (sub / rel).parent.mkdir(parents=True, exist_ok=True)
+        (sub / rel).write_text(content)
+    (sub / "wp-admin" / "index.php").write_text("<?php // tampered in the subfolder site\n")
+    acct = _connect(sess, tid, sftp_server)
+    wid = _website(sess, tid, acct)
+    assert _scan(sess, tid, wid) == ["succeeded"]
+    sftp_server.state.extra_logins[FIXER[0]] = FIXER[1]
+    sftp_server.state.write_users.add(FIXER[0])
+    sess.put(f"/api/v1/tenants/{tid}/hosting-accounts/{acct}/remediation-access", json={
+        "hostname": "127.0.0.1", "port": sftp_server.port, "username": FIXER[0], "root_path": "/public_html",
+        "credential": {"kind": "password", "value": FIXER[1]}})
+    t = sess.post(f"/api/v1/tenants/{tid}/tickets", json={"subject": "Fix", "category": "malware_cleanup",
+                                                          "body": "x", "website_id": wid}).json()
+    eng = _staff("nested@trustdata.example.com", ["support_agent"])
+    eng.post(f"/api/v1/ops/service-desk/{t['id']}/assign", json={})
+    eng.post(f"/api/v1/ops/service-desk/{t['id']}/assign", json={})  # re-assigning the same person: no-op
+    sess.post(f"/api/v1/tenants/{tid}/tickets/{t['id']}/remediation-approval",
+              json={"scope": "Restore genuine files in both WordPress sites.", "confirm": True})
+    h = {"eng": eng, "ticket": t["id"]}
+    c = _cands(h)["e-adamawa/wp-admin/index.php"]
+    r = _act(h, "restore_genuine", c["path"], c["sha256"])
+    assert r.status_code == 200, r.text
+    assert (sub / "wp-admin" / "index.php").read_text() == CORE_FILES["wp-admin/index.php"]
+    assert "/tags/6.7.1/wp-admin/index.php" in r.json()["source"]
+    timeline = eng.get(f"/api/v1/ops/service-desk/{t['id']}").json()["messages"]
+    assert sum(1 for m in timeline if m["body"].startswith("Assigned to")) == 1

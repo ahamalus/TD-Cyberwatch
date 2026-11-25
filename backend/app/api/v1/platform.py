@@ -1203,6 +1203,10 @@ def desk_assign(ticket_id: uuid.UUID, body: DeskAssignIn,
         u = db.get(User, uid)
         if u is None or not u.is_platform_staff or not u.is_active:
             raise ValidationFailed("Assign to an active staff member.")
+        if t.assigned_to == uid:
+            service_desk.ensure_grant(db, t, pc.actor())  # nothing else changes; no duplicate timeline entry
+            db.commit()
+            return desk_ticket(ticket_id, pc)
         t.assigned_to = uid
         if t.status == "open":
             t.status = "in_progress"

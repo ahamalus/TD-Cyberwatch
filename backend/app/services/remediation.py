@@ -267,8 +267,10 @@ def official_file(db: Session, website_id: uuid.UUID, path: str) -> tuple[bytes,
 
     installs = db.execute(select(SoftwareInstall).where(SoftwareInstall.website_id == website_id)).scalars().all()
     s = get_settings()
+    # The deepest install containing the file owns it: a WordPress site in a subfolder (e.g. "blog/") sits inside
+    # the root install's folder, and its files are relative to its own root. Plugins beat core at equal depth.
     target = None
-    for inst in sorted(installs, key=lambda i: i.product != vendor.PLUGIN):  # plugins first: more specific
+    for inst in sorted(installs, key=lambda i: (-len(i.root), i.product != vendor.PLUGIN)):
         if inst.product == vendor.PLUGIN:
             base = f"{inst.root}wp-content/plugins/{inst.slug}/"
             if path.startswith(base):
