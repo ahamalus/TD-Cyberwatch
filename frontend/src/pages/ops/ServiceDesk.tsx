@@ -177,6 +177,119 @@ function RequestAuthorisation({ d, onDone }: { d: any; onDone: () => void }) {
   );
 }
 
+const CONF_COLOR: Record<string, string> = { high: "threat", medium: "amber", low: "gray" };
+const t2 = (v?: string | null) => (v ? new Date(v).toISOString().slice(0, 19).replace("T", " ") + " UTC" : "—");
+
+export function InvestigationSection({ d, onReport }: { d: any; onReport: () => void }) {
+  const q = useQuery({
+    queryKey: ["desk-investigation", d.id],
+    queryFn: () => api.get<any>(`/ops/service-desk/${d.id}/investigations/latest`),
+    refetchInterval: (query) => (query.state.data?.investigation?.status === "running" ? 3000 : false),
+  });
+  const start = useMutation({ mutationFn: () => api.post(`/ops/service-desk/${d.id}/investigations`, {}), onSuccess: () => q.refetch(), onError });
+  const addToReport = useMutation({
+    mutationFn: (text: string) => api.put(`/ops/service-desk/${d.id}/report`, {
+      findings: [d.report?.findings, text].filter(Boolean).join("\n\n"), actions_taken: d.report?.actions_taken ?? "",
+      recommendations: d.report?.recommendations ?? "", verification: d.report?.verification ?? "" }),
+    onSuccess: () => { onReport(); notifications.show({ color: "secure", title: "Added to the report", message: "Edit it under Report for the customer." }); },
+    onError,
+  });
+  if (!q.data) return null;
+  if (!q.data.allowed) return null; // results are site data: only the assigned engineer with the access grant
+  const inv = q.data.investigation;
+  const r = inv?.result ?? {};
+  const running = inv?.status === "running" || start.isPending;
+  return (
+    <Section title="Investigate entry point"
+      description="Finds when each malicious file appeared, searches the access logs around that time, follows the addresses that used the files, and checks the site's WordPress and plugin versions. Read-only."
+      actions={<Button size="xs" onClick={() => start.mutate()} loading={running}>{inv ? "Run again" : "Run investigation"}</Button>}>
+      {!inv ? <Text size="sm" c="dimmed">Not run yet. It takes from a few seconds to a few minutes, depending on the size of the logs.</Text>
+        : inv.status === "running" ? <Text size="sm">Reading logs and records… (started {fmtRelative(inv.started_at)})</Text>
+        : inv.status === "failed" ? <Alert color="threat" variant="light" title="The investigation failed">{inv.error}</Alert> : (
+          <Stack gap="md">
+            <Text size="xs" c="dimmed">Run {fmtRelative(inv.finished_at)} · {r.logs?.requests ?? 0} requests read{r.logs?.from ? `, ${t2(r.logs.from)} to ${t2(r.logs.to)}` : ""}</Text>
+            {(r.notes ?? []).map((n: string) => <Alert key={n} color="gray" variant="light">{n}</Alert>)}
+            <Box>
+              <Group justify="space-between" mb={4}>
+                <Text fw={700} size="sm">Most likely explanations</Text>
+                {inv.report_text && <Button size="compact-xs" variant="light" loading={addToReport.isPending} onClick={() => addToReport.mutate(inv.report_text)}>Add to report</Button>}
+              </Group>
+              {(r.hypotheses ?? []).length === 0 ? <Text size="sm" c="dimmed">No explanation found in the evidence available.</Text> : (
+                <Stack gap="xs">
+                  {r.hypotheses.map((h: any, i: number) => (
+                    <Card key={i} p="xs" shadow="none" withBorder>
+                      <Group gap={6}><Badge size="xs" color={CONF_COLOR[h.confidence]}>{h.confidence}</Badge><Text size="sm" fw={600}>{h.title}</Text></Group>
+                      <Text size="xs" mt={4}>{h.detail}</Text>
+                      <Text size="xs" c="dimmed" className="cw-mono">{h.file}</Text>
+                      {h.evidence.map((e: any, j: number) => <Text key={j} size="xs" className="cw-mono" style={{ wordBreak: "break-all" }}>{t2(e.at)} {e.ip} {e.method} {e.path} → {e.status}</Text>)}
+                    </Card>
+                  ))}
+                </Stack>
+              )}
+            </Box>
+            {(r.pivots ?? []).length > 0 && (
+              <Box>
+                <Text fw={700} size="sm" mb={4}>Timeline around each file</Text>
+                <Stack gap="xs">
+                  {r.pivots.map((p: any) => (
+                    <Card key={p.path} p="xs" shadow="none" withBorder>
+                      <Text size="sm" className="cw-mono" style={{ wordBreak: "break-all" }}>{p.path}</Text>
+                      <Text size="xs" c="dimmed">Appeared {t2(p.time)} ({p.time_source}) · {p.reasons.join("; ")}{p.logs_cover_time ? "" : " · no logs for that time"}</Text>
+                      {p.used_by.length > 0 && <Text size="xs" mt={4}>Used by: {p.used_by.map((u: any) => `${u.ip} (${u.requests}×, first ${t2(u.first)})`).join(", ")}</Text>}
+                      {p.window.length > 0 && (
+                        <Box mt={4}>
+                          <Text size="xs" fw={600}>Requests from 30 min before to 5 min after{p.window_total > p.window.length ? ` (first ${p.window.length} of ${p.window_total})` : ""}:</Text>
+                          {p.window.map((e: any, j: number) => (
+                            <Text key={j} size="xs" className="cw-mono" fw={e.attacker_ip ? 700 : undefined} c={e.attacker_ip ? "var(--mantine-color-threat-text)" : undefined} style={{ wordBreak: "break-all" }}>
+                              {t2(e.at)} {e.ip} {e.method} {e.path}{e.query ? `?${e.query}` : ""} → {e.status}
+                            </Text>
+                          ))}
+                        </Box>
+                      )}
+                    </Card>
+                  ))}
+                </Stack>
+              </Box>
+            )}
+            {(r.attacker_ips ?? []).length > 0 && (
+              <Box>
+                <Text fw={700} size="sm" mb={4}>Addresses that used the files</Text>
+                <Stack gap="xs">
+                  {r.attacker_ips.map((a: any) => (
+                    <Card key={a.ip} p="xs" shadow="none" withBorder>
+                      <Text size="sm" fw={600}>{a.ip}</Text>
+                      <Text size="xs" c="dimmed">{a.requests} requests · first {t2(a.first_seen)} · last {t2(a.last_seen)} · {a.logins} login attempt(s) · {a.agents.join(" | ")}</Text>
+                      <Text size="xs" fw={600} mt={4}>First requests (often the way in):</Text>
+                      {a.first_requests.slice(0, 10).map((e: any, j: number) => <Text key={j} size="xs" className="cw-mono" style={{ wordBreak: "break-all" }}>{t2(e.at)} {e.method} {e.path} → {e.status}</Text>)}
+                    </Card>
+                  ))}
+                </Stack>
+              </Box>
+            )}
+            {(r.software ?? []).length > 0 && (
+              <Box>
+                <Text fw={700} size="sm" mb={4}>WordPress and plugins</Text>
+                <Stack gap={4}>
+                  {r.software.map((sw: any) => (
+                    <Box key={`${sw.root}${sw.slug}`}>
+                      <Group gap={6}>
+                        <Text size="sm">{sw.name || sw.slug} {sw.version ?? "?"}{sw.root ? ` (${sw.root})` : ""}</Text>
+                        {sw.vulnerabilities.length > 0 ? <Badge size="xs" color="threat">{sw.vulnerabilities.length} known vulnerabilit{sw.vulnerabilities.length === 1 ? "y" : "ies"}</Badge>
+                          : sw.outdated ? <Badge size="xs" color="amber">Outdated: {sw.latest} available</Badge>
+                          : sw.latest ? <Badge size="xs" color="secure" variant="light">Up to date</Badge> : <Badge size="xs" color="gray" variant="light">Latest unknown</Badge>}
+                      </Group>
+                      {sw.vulnerabilities.slice(0, 3).map((v: any) => <Text key={v.id} size="xs" c="dimmed">{v.cve ?? v.id} · CVSS {v.cvss ?? "?"} · {v.title}{v.patched_versions?.length ? ` (fixed in ${v.patched_versions.join(", ")})` : ""}</Text>)}
+                    </Box>
+                  ))}
+                </Stack>
+              </Box>
+            )}
+          </Stack>
+        )}
+    </Section>
+  );
+}
+
 export function DeskTicketPage() {
   const { ticketId } = useParams();
   const me = useMe();
@@ -233,6 +346,7 @@ export function DeskTicketPage() {
                 )}
               </Stack>
             </Section>
+            {d.is_service_request && <InvestigationSection d={d} onReport={() => q.refetch()} />}
             {d.is_service_request && <FixFilesSection ticketId={d.id} />}
             {d.is_service_request && (
               <Section title="Report for the customer" description="Shown on the customer's request page. Required before resolving a service request.">

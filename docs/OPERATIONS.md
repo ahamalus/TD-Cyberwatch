@@ -174,6 +174,25 @@ engineer automatically creates a 14-day access grant for that engineer (recorded
 customer's authorisation as its basis); it is revoked when the request is closed or cancelled, or when the
 engineer is unassigned. Set `CW_SUPPORT_EMAILS` to a shared inbox to be told about new requests as well.
 
+### Investigating how the attacker got in
+
+On an authorised request, the assigned engineer clicks **Run investigation** (panel *Investigate entry point*). It
+runs in the background (seconds to a few minutes) and is read-only:
+1. **Malicious files and when they appeared**: malware-scan hits, files not part of the WordPress release, scripts
+   in upload folders and files named in the request's incidents, with their modification time (or when CyberWatch
+   first saw them, if earlier; attackers can fake modification times).
+2. **Requests around each file** (30 minutes before to 5 minutes after) from the access logs and the `~/logs`
+   archives: POST requests, plugin/theme scripts, login, XML-RPC, REST API, admin-ajax, plugin/theme upload and
+   editor pages. Requests from the attacker's addresses are highlighted.
+3. **Who used the files** and **each attacker address's first requests**, which often show the way in.
+4. **WordPress and plugin versions** against the latest release, and known vulnerabilities when
+   `CW_WORDFENCE_API_KEY` is set (free key from wordfence.com, Wordfence Intelligence).
+5. **Most likely explanations**, ranked: WordPress login with a valid password, exploited plugin/theme, upload or
+   edit through the dashboard, an earlier planted script, or *no web request explains it* (stolen FTP/cPanel
+   credentials, another site on the same account). **Add to report** copies the summary into the report.
+
+It can only explain what the logs contain: hosts keep a limited history, so investigate soon after an incident.
+
 ### Fixing files (remediation)
 
 For WordPress sites, the engineer can fix files from the request's **Fix files** panel instead of editing the

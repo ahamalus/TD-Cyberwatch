@@ -124,3 +124,19 @@ class PlatformSetting(Base):
     description: Mapped[str] = mapped_column(Text, default="", nullable=False)
     updated_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class Investigation(UUIDPk, Base):
+    """One run of the entry-point analysis for a website (see services/investigation.py)."""
+
+    __tablename__ = "investigations"
+
+    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
+    ticket_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("support_tickets.id", ondelete="CASCADE"))
+    website_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("websites.id", ondelete="CASCADE"), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)  # running | done | failed
+    requested_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    result: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+    error: Mapped[str | None] = mapped_column(Text)

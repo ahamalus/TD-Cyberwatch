@@ -1499,3 +1499,54 @@ def desk_request_authorisation(ticket_id: uuid.UUID, body: AuthorisationRequestI
                  target_type="ticket", target_id=t.id, details={"scope": t.proposed_scope})
     db.commit()
     return desk_ticket(ticket_id, pc)
+
+
+# ---------------------------------------------------------------- investigation (staff)
+
+
+def _investigation_dict(inv) -> dict:
+    return {"id": str(inv.id), "status": inv.status, "started_at": inv.started_at, "finished_at": inv.finished_at,
+            "error": inv.error, "result": inv.result or {}}
+
+
+@ops.post("/service-desk/{ticket_id}/investigations", status_code=202)
+def desk_investigate(ticket_id: uuid.UUID, pc: PlatformContext = Depends(require_platform(P.OPS_SERVICE_DESK))) -> dict:
+    """Start an entry-point investigation (reads the site's logs and records; changes nothing)."""
+    from app.models import Investigation
+    from app.services import investigation
+
+    db = pc.db
+    t = _desk_ticket(db, ticket_id)
+    blocked = _remediation_gate(db, t, pc.principal.user.id)
+    if blocked:
+        raise ValidationFailed(blocked.replace("change files", "investigate the site"), code="not_permitted")
+    running = db.execute(select(Investigation).where(Investigation.ticket_id == t.id, Investigation.status == "running",
+                                                     Investigation.started_at > utcnow() - timedelta(minutes=30))).scalars().first()
+    if running:
+        return _investigation_dict(running)
+    inv = Investigation(id=uuid.uuid4(), tenant_id=t.tenant_id, ticket_id=t.id, website_id=t.website_id,
+                        status="running", requested_by=pc.principal.user.id, started_at=utcnow(), result={})
+    db.add(inv)
+    audit.record(db, "service_desk.investigation_started", actor=pc.principal.actor(t.grant_id), tenant_id=t.tenant_id,
+                 target_type="ticket", target_id=t.id)
+    db.commit()
+    investigation.dispatch(inv.id)
+    return _investigation_dict(inv)
+
+
+@ops.get("/service-desk/{ticket_id}/investigations/latest")
+def desk_investigation_latest(ticket_id: uuid.UUID,
+                              pc: PlatformContext = Depends(require_platform(P.OPS_SERVICE_DESK))) -> dict:
+    from app.models import Investigation
+    from app.services import investigation
+
+    db = pc.db
+    t = _desk_ticket(db, ticket_id)
+    if _remediation_gate(db, t, pc.principal.user.id):
+        return {"investigation": None, "allowed": False}  # results are site data: grant holder only
+    inv = db.execute(select(Investigation).where(Investigation.ticket_id == t.id)
+                     .order_by(Investigation.started_at.desc()).limit(1)).scalar_one_or_none()
+    out = _investigation_dict(inv) if inv else None
+    if out and inv.status == "done":
+        out["report_text"] = investigation.summary_text(inv.result or {})
+    return {"investigation": out, "allowed": True}

@@ -113,6 +113,19 @@ def subscription_maintenance() -> dict:
     return stats
 
 
+@celery_app.task(name="cw.investigate")
+def investigate(investigation_id: str) -> str:
+    """Entry-point investigation (services/investigation.py); runs on the checks queue (internet access)."""
+    import uuid as _uuid
+
+    from app.services import investigation
+
+    with platform_session() as s:
+        inv = investigation.run(s, _uuid.UUID(investigation_id))
+        s.commit()
+        return inv.status
+
+
 @celery_app.task(name="cw.audit_anchor")
 def audit_anchor() -> dict:
     from app.services import audit_anchor as anchors

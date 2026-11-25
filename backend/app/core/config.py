@@ -98,6 +98,9 @@ class Settings(BaseSettings):
     # Official file sources for remediation (raw files from the release tags; always checksum-verified).
     wordpress_core_svn_base: str = "https://core.svn.wordpress.org"
     wordpress_plugins_svn_base: str = "https://plugins.svn.wordpress.org"
+    # Optional: Wordfence Intelligence (free API key) for known plugin/theme/core vulnerabilities in investigations.
+    wordfence_api_key: str = ""
+    wordfence_feed_url: str = "https://www.wordfence.com/api/intelligence/v2/vulnerabilities/scanner"
 
     # Off-server copies of the audit-trail anchor (JSON list, e.g. '["audit@yourcompany.com"]'). Use a mailbox
     # that server administrators cannot alter. Nightly backups also store anchors (see services/audit_anchor.py).

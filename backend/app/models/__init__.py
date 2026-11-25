@@ -26,7 +26,7 @@ from app.models.identity import (
     UserSession,
 )
 from app.models.incidents import Incident, IncidentEvent, IncidentEvidence, SuppressionRule
-from app.models.misc import AuditEvent, PlatformSetting, Report, SupportTicket, TicketMessage
+from app.models.misc import AuditEvent, Investigation, PlatformSetting, Report, SupportTicket, TicketMessage
 from app.models.notifications import AlertPolicy, AlertRecipient, Notification
 from app.models.scans import (
     AvailabilityCheck,
@@ -93,6 +93,7 @@ __all__ = [
     "FileSnapshot",
     "FileSnapshotEntry",
     "MalwareVerdict",
+    "Investigation",
     "LogCursor",
     "RemediationAction",
     "RemediationCredential",
