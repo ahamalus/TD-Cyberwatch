@@ -45,6 +45,9 @@ class SupportTicket(UUIDPk, Timestamps, Base):
     billing_status: Mapped[str] = mapped_column(String(16), default="included", server_default="included", nullable=False)
     price_minor: Mapped[int | None] = mapped_column(BigInteger)
     grant_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    # Scope proposed by the engineer when asking the customer to authorise the work.
+    proposed_scope: Mapped[str | None] = mapped_column(Text)
+    authorisation_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class TicketMessage(UUIDPk, Base):

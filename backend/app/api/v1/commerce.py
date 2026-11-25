@@ -12,7 +12,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.api.deps import TenantContext, require
-from app.core.errors import NotFound, ValidationFailed
+from app.core.errors import Conflict, NotFound, ValidationFailed
 from app.core.permissions import P
 from app.db.base import utcnow
 from app.db.session import get_db
@@ -239,6 +239,7 @@ def ticket_dict(db: Session, t: SupportTicket, with_messages: bool = False, inte
          "incident_ids": [str(x) for x in (t.incident_ids or [])],
          "created_at": t.created_at, "updated_at": t.updated_at, "remediation_approved_at": t.remediation_approved_at,
          "remediation_scope": t.remediation_scope, "is_service_request": t.category in service_desk.SERVICE_CATEGORIES,
+         "proposed_scope": t.proposed_scope, "authorisation_requested_at": t.authorisation_requested_at,
          "sla": {"response_due": t.sla_response_due, "resolution_due": t.sla_resolution_due,
                  "first_response_at": t.first_response_at, "resolved_at": t.resolved_at,
                  **service_desk.sla_state(t)},
@@ -269,10 +270,15 @@ def service_desk_summary(ctx: TenantContext = Depends(require(P.SUPPORT_READ)), 
 
 @router.get("/tickets")
 def list_tickets(ctx: TenantContext = Depends(require(P.SUPPORT_READ)), db: Session = Depends(get_db),
-                 params: PageParams = Depends(), status: str | None = Query(None, max_length=20)) -> dict:
+                 params: PageParams = Depends(), status: str | None = Query(None, max_length=20),
+                 incident_id: uuid.UUID | None = None, active: bool = False) -> dict:
     q = select(SupportTicket).where(SupportTicket.tenant_id == ctx.tenant_id)
     if status:
         q = q.where(SupportTicket.status == status)
+    if incident_id:
+        q = q.where(SupportTicket.incident_ids.contains([str(incident_id)]))
+    if active:
+        q = q.where(SupportTicket.status.notin_(["closed", "cancelled"]))
     return paginate(db, q.order_by(SupportTicket.updated_at.desc()), params, lambda t: ticket_dict(db, t))
 
 
@@ -294,6 +300,13 @@ def create_ticket(body: TicketIn, ctx: TenantContext = Depends(require(P.SUPPORT
     incident_ids = list(dict.fromkeys(body.incident_ids + ([body.incident_id] if body.incident_id else [])))
     _owned(db, ctx.tenant_id, body.website_id, incident_ids)
     db.execute(text("SELECT pg_advisory_xact_lock(hashtext(:k))"), {"k": f"ticketref:{ctx.tenant_id}"})
+    for inc_id in incident_ids:  # one active request per incident (checked under the lock: no race)
+        dup = db.execute(select(SupportTicket).where(
+            SupportTicket.tenant_id == ctx.tenant_id, SupportTicket.status.notin_(["closed", "cancelled"]),
+            SupportTicket.incident_ids.contains([str(inc_id)]))).scalars().first()
+        if dup is not None:
+            raise Conflict(f"This incident already has an open request ({dup.reference}). Continue there.",
+                           details={"ticket_id": str(dup.id), "reference": dup.reference})
     n = db.execute(select(func.count()).select_from(SupportTicket).where(SupportTicket.tenant_id == ctx.tenant_id)).scalar_one()
     t = SupportTicket(tenant_id=ctx.tenant_id, reference=f"SUP-{n + 1:05d}", subject=body.subject,
                       category=body.category, priority=body.priority, website_id=body.website_id,
@@ -371,6 +384,8 @@ def approve_remediation(ticket_id: uuid.UUID, body: RemediationApprovalIn,
     if t.status in ("closed", "cancelled"):
         raise ValidationFailed("This request is closed.")
     t.remediation_approved_by, t.remediation_approved_at, t.remediation_scope = ctx.user.id, utcnow(), body.scope
+    if t.status == "awaiting_customer":
+        t.status = "in_progress" if t.assigned_to else "open"
     service_desk.add_message(db, t, ctx.user.id, f"Customer authorised the work within this scope:\n{body.scope}",
                              staff=False, kind="authorisation")
     audit.record(db, "support.remediation_approved", actor=ctx.actor(), tenant_id=ctx.tenant_id,

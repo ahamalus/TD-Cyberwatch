@@ -111,11 +111,10 @@ def test_plan_allowance_and_sla_scale_with_support_level(alice, monkeypatch):
              "tasks_per_month": 2}
     monkeypatch.setattr(service_desk, "plan_terms", lambda db, t: terms)
     wid = _make_site(sess, tid)
-    inc = _incident(tid, wid)
-    first = _request(sess, tid, wid, inc, priority="high")
-    second = _request(sess, tid, wid, inc, category="maintenance", priority="normal")
-    third = _request(sess, tid, wid, inc, category="performance", priority="low")
-    general = _request(sess, tid, wid, inc, category="general")
+    first = _request(sess, tid, wid, _incident(tid, wid), priority="high")
+    second = _request(sess, tid, wid, _incident(tid, wid), category="maintenance", priority="normal")
+    third = _request(sess, tid, wid, _incident(tid, wid), category="performance", priority="low")
+    general = _request(sess, tid, wid, _incident(tid, wid), category="general")
     assert [first["billing_status"], second["billing_status"], third["billing_status"]] == ["included", "included", "quote"]
     assert general["billing_status"] == "included" and general["checklist"] == []
     from datetime import datetime
@@ -140,3 +139,39 @@ def test_customer_can_withdraw_an_unanswered_request(alice):
     t = _request(sess, tid, wid, _incident(tid, wid), category="migration")
     assert sess.post(f"/api/v1/tenants/{tid}/tickets/{t['id']}/close").json()["status"] == "cancelled"
     assert sess.post(f"/api/v1/tenants/{tid}/tickets/{t['id']}/messages", json={"body": "x"}).status_code == 422
+
+
+def test_engineer_requests_authorisation_and_owner_accepts_the_proposed_scope(alice):
+    sess, tid = alice
+    wid = _make_site(sess, tid)
+    t = _request(sess, tid, wid, _incident(tid, wid))
+    agent = _staff("asker@trustdata.example.com", ["support_agent"])
+    agent.post(f"/api/v1/ops/service-desk/{t['id']}/assign", json={})
+    scope = "Remove the web shell in uploads and restore genuine WordPress core files on www.alpha-site.com."
+    r = agent.post(f"/api/v1/ops/service-desk/{t['id']}/request-authorisation", json={"scope": scope})
+    assert r.status_code == 200 and r.json()["status"] == "awaiting_customer"
+    mine = sess.get(f"/api/v1/tenants/{tid}/tickets/{t['id']}").json()
+    assert mine["proposed_scope"] == scope and mine["authorisation_requested_at"]
+    with platform_session() as db:
+        assert db.execute(select(Notification).where(Notification.recipient == "alice@alpha.example.com",
+                                                     Notification.subject.like("%authorisation is needed%"))).first()
+    r = sess.post(f"/api/v1/tenants/{tid}/tickets/{t['id']}/remediation-approval", json={"scope": scope, "confirm": True})
+    assert r.json()["status"] == "in_progress" and r.json()["access_granted"]
+    assert agent.post(f"/api/v1/ops/service-desk/{t['id']}/request-authorisation",
+                      json={"scope": scope}).status_code == 422, "already authorised"
+
+
+def test_one_active_request_per_incident(alice):
+    sess, tid = alice
+    wid = _make_site(sess, tid)
+    inc = _incident(tid, wid)
+    first = _request(sess, tid, wid, inc)
+    r = sess.post(f"/api/v1/tenants/{tid}/tickets", json={"subject": "Again please", "category": "fix_site",
+                                                          "body": "x", "incident_ids": [inc]})
+    assert r.status_code == 409 and first["reference"] in r.json()["error"]["message"]
+    assert r.json()["error"]["details"]["ticket_id"] == first["id"]
+    found = sess.get(f"/api/v1/tenants/{tid}/tickets", params={"incident_id": inc, "active": True}).json()["items"]
+    assert [x["id"] for x in found] == [first["id"]]
+    # Once the request is closed or withdrawn, a new one may be opened.
+    sess.post(f"/api/v1/tenants/{tid}/tickets/{first['id']}/close")
+    assert _request(sess, tid, wid, inc)["id"] != first["id"]

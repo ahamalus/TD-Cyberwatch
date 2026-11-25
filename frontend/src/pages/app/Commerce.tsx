@@ -26,7 +26,7 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useCan, useTenantId } from "../../api/auth";
-import { api, downloadUrl, errorMessage } from "../../api/client";
+import { ApiError, api, downloadUrl, errorMessage } from "../../api/client";
 import type { Page, Website } from "../../api/types";
 import { fmtBytes, fmtDate, fmtDateTime, fmtMoney, humanize, minCharsHint, shortHash } from "../../components/format";
 import { SlaBadge, SubscriptionBadge, TicketStatusBadge } from "../../components/status";
@@ -277,6 +277,8 @@ export interface Ticket {
   assigned_team_member?: string | null;
   remediation_approved_at: string | null;
   remediation_scope: string | null;
+  proposed_scope: string | null;
+  authorisation_requested_at: string | null;
   access_granted: boolean;
   sla: { response_due: string | null; resolution_due: string | null; first_response_at: string | null; resolved_at: string | null; response: string; resolution: string };
   checklist: { key: string; label: string; done: boolean; done_at: string | null }[];
@@ -354,7 +356,16 @@ export function SupportPage() {
   const create = useMutation({
     mutationFn: () => api.post<Ticket>(`/tenants/${tid}/tickets`, { ...form, website_id: form.website_id || null }),
     onSuccess: (t) => { close(); navigate(`/app/${tid}/support/${t.id}`); },
-    onError: (e) => notifications.show({ color: "threat", title: "Not created", message: errorMessage(e) }),
+    onError: (e) => {
+      const existing = e instanceof ApiError && e.status === 409 ? (e.details as { ticket_id?: string } | null)?.ticket_id : undefined;
+      if (existing) {
+        close();
+        notifications.show({ color: "info", title: "Already being handled", message: errorMessage(e) });
+        navigate(`/app/${tid}/support/${existing}`);
+        return;
+      }
+      notifications.show({ color: "threat", title: "Not created", message: errorMessage(e) });
+    },
   });
   const d = desk.data;
   const isService = !!d?.service_types.some((s) => s.key === form.category);
@@ -478,10 +489,13 @@ export function TicketPage() {
     onError,
   });
   const closeReq = useMutation({ mutationFn: () => api.post(`/tenants/${tid}/tickets/${ticketId}/close`, {}), onSuccess: () => t.refetch(), onError });
+  const proposed = t.data?.proposed_scope;
+  useEffect(() => { if (proposed && !scope) setScope(proposed); }, [proposed]); // eslint-disable-line react-hooks/exhaustive-deps
   if (t.error) return <ErrorState error={t.error} />;
   if (!t.data) return <LoadingBlock />;
   const d = t.data;
   const done = d.checklist.filter((c) => c.done).length;
+  const authNeeded = d.is_service_request && !d.remediation_approved_at && !!d.proposed_scope && !["closed", "cancelled"].includes(d.status);
   const finished = ["closed", "cancelled"].includes(d.status);
   const r = d.report ?? {};
   return (
@@ -495,7 +509,12 @@ export function TicketPage() {
       {d.billing_status === "quote" && !finished && (
         <Alert color="amber" variant="light" mb="md" title="Price to be confirmed">This request is outside your plan's included services. We will confirm the price with you before any work starts.</Alert>
       )}
-      {d.status === "awaiting_customer" && <Alert color="amber" variant="light" mb="md" title="We need your input">Please reply below so we can continue.</Alert>}
+      {authNeeded ? (
+        <Alert color="amber" variant="light" mb="md" icon={<IconAlertTriangle />} title="Trust Data is asking for your authorisation" style={{ borderLeft: "4px solid var(--mantine-color-amber-6)" }}>
+          <Text size="sm">Before changing anything on your website we need your permission for: <b>{d.proposed_scope}</b></Text>
+          <Text size="sm" mt={4}>{can("managed_service:approve") ? "Review and authorise it under \u201cAuthorise the work\u201d on this page (you can adjust the scope first)." : "Ask an organisation owner to authorise it on this page."}</Text>
+        </Alert>
+      ) : d.status === "awaiting_customer" && <Alert color="amber" variant="light" mb="md" title="We need your input">Please reply below so we can continue.</Alert>}
       <SimpleGrid cols={{ base: 1, md: 3 }} spacing="md">
         <Stack style={{ gridColumn: "span 2" }}>
           {(r.actions_taken || r.findings) && (
@@ -560,7 +579,7 @@ export function TicketPage() {
                 </Alert>
               ) : finished ? <Text size="sm" c="dimmed">Not authorised.</Text> : can("managed_service:approve") ? (
                 <Stack>
-                  <Textarea label="Approved scope" description={minCharsHint(scope, 10, "Describe exactly what may be changed, e.g. 'Remove malware and restore genuine files on www.example.com; update plugins'.")} autosize minRows={3} value={scope} onChange={(e) => setScope(e.currentTarget.value)} />
+                  <Textarea label="Approved scope" description={minCharsHint(scope, 10, d.proposed_scope ? "Proposed by Trust Data. You may narrow or adjust it before authorising." : "Describe exactly what may be changed, e.g. 'Remove malware and restore genuine files on www.example.com; update plugins'.")} autosize minRows={3} value={scope} onChange={(e) => setScope(e.currentTarget.value)} />
                   <ConfirmButton title="Authorise this work?" message="Trust Data may make the described changes, and the assigned engineer gets time-limited access to your monitoring data. Your authorisation is permanently recorded in the audit trail." confirmLabel="Authorise" disabled={scope.trim().length < 10} onConfirm={() => approve.mutateAsync()}>Authorise</ConfirmButton>
                 </Stack>
               ) : <Text size="sm" c="dimmed">Only organisation owners can authorise work.</Text>}

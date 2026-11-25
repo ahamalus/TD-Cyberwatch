@@ -239,13 +239,25 @@ def desk_staff_emails(db: Session) -> list[str]:
     return sorted(set(emails) | {e.strip().lower() for e in get_settings().support_emails if e.strip()})
 
 
-def notify(db: Session, t: SupportTicket, *, to_customer: bool, subject: str, body: str, key: str) -> None:
+def owner_emails(db: Session, tenant_id: uuid.UUID) -> list[str]:
+    """Organisation owners: the people who can authorise work."""
+    from app.models import TenantMembership
+
+    return list(db.execute(select(User.email).join(TenantMembership, TenantMembership.user_id == User.id).where(
+        TenantMembership.tenant_id == tenant_id, TenantMembership.role_key == "owner",
+        TenantMembership.status == "active", User.is_active.is_(True))).scalars())
+
+
+def notify(db: Session, t: SupportTicket, *, to_customer: bool, subject: str, body: str, key: str,
+           include_owners: bool = False) -> None:
     from app.services.notifications import queue_simple
 
     s = get_settings()
     if to_customer:
         u = db.get(User, t.created_by)
         recipients = [u.email] if u and u.is_active else []
+        if include_owners:
+            recipients = sorted(set(recipients) | set(owner_emails(db, t.tenant_id)))
         link = f"{s.public_base_url.rstrip('/')}/app/{t.tenant_id}/support/{t.id}"
         tenant_id = t.tenant_id
     else:

@@ -142,6 +142,41 @@ function FixFilesSection({ ticketId }: { ticketId: string }) {
   );
 }
 
+const DEFAULT_SCOPE: Record<string, string> = {
+  malware_cleanup: "Find and remove malware and unauthorised files; restore genuine WordPress core and plugin files; update or remove vulnerable plugins and themes; reset WordPress security keys; apply basic hardening.",
+  remediation_request: "Find and remove malware and unauthorised files; restore genuine WordPress core and plugin files; apply basic hardening.",
+  fix_site: "Diagnose the reported problem and fix or roll back its cause (files, plugins, theme or configuration).",
+  migration: "Copy the website files and database to the new host, update its configuration, and test before the DNS switch.",
+  maintenance: "Make the requested change, with a backup first.",
+  performance: "Change caching, plugin and media settings to improve page speed.",
+};
+
+function RequestAuthorisation({ d, onDone }: { d: any; onDone: () => void }) {
+  const [scope, setScope] = useState(d.proposed_scope ?? `${DEFAULT_SCOPE[d.category] ?? "Carry out the requested work."}${d.website ? ` Website: ${d.website.url}` : ""}`);
+  const [message, setMessage] = useState("");
+  const send = useMutation({
+    mutationFn: () => api.post(`/ops/service-desk/${d.id}/request-authorisation`, { scope, message }),
+    onSuccess: () => { onDone(); notifications.show({ color: "secure", title: "Authorisation requested", message: "The customer and their owners were emailed." }); },
+    onError,
+  });
+  const finished = ["resolved", "closed", "cancelled"].includes(d.status);
+  return (
+    <Stack gap="xs">
+      <Alert color="amber" variant="light" title="Not authorised yet">Do not change the customer's site until they authorise the work. Once they do, the assigned engineer gets time-limited access automatically.</Alert>
+      {d.authorisation_requested_at && <Text size="sm">Requested {fmtRelative(d.authorisation_requested_at)}; waiting for an owner to authorise.</Text>}
+      {!finished && (
+        <>
+          <Textarea label="Proposed scope" description="Exactly what you will change. The customer sees this and can adjust it before authorising." autosize minRows={3} value={scope} onChange={(e) => setScope(e.currentTarget.value)} />
+          <Textarea label="Note to the customer (optional)" autosize minRows={1} value={message} onChange={(e) => setMessage(e.currentTarget.value)} />
+          <Button w="fit-content" onClick={() => send.mutate()} loading={send.isPending} disabled={scope.trim().length < 10}>
+            {d.authorisation_requested_at ? "Send the request again" : "Request authorisation"}
+          </Button>
+        </>
+      )}
+    </Stack>
+  );
+}
+
 export function DeskTicketPage() {
   const { ticketId } = useParams();
   const me = useMe();
@@ -242,7 +277,7 @@ export function DeskTicketPage() {
                         {grantMine && <Anchor component={Link} to={`/app/${d.tenant_id}/overview`}>Open the customer's portal</Anchor>}</Text>
                     ) : <Text size="sm" c="dimmed">Access starts when an engineer is assigned.</Text>}
                   </Stack>
-                ) : <Alert color="amber" variant="light" title="Not authorised yet">Do not change the customer's site. Ask the customer to authorise the work on their request page; the assigned engineer then gets time-limited access automatically.</Alert>}
+                ) : <RequestAuthorisation d={d} onDone={() => q.refetch()} />}
               </Section>
             )}
             {(d.website || d.incidents.length > 0) && (

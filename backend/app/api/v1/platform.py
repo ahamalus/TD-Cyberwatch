@@ -1456,3 +1456,42 @@ def desk_remediation_undo(ticket_id: uuid.UUID, action_id: uuid.UUID,
                              staff=True, kind="status")
     db.commit()
     return remediation.action_dict(db, a)
+
+
+
+class AuthorisationRequestIn(BaseModel):
+    scope: str = Field(min_length=10, max_length=5000)
+    message: str = Field(default="", max_length=5000)
+
+
+@ops.post("/service-desk/{ticket_id}/request-authorisation")
+def desk_request_authorisation(ticket_id: uuid.UUID, body: AuthorisationRequestIn,
+                               pc: PlatformContext = Depends(require_platform(P.OPS_SERVICE_DESK))) -> dict:
+    """Ask the customer to authorise the work, proposing exactly what will be changed. The customer can accept
+    the scope as proposed or edit it; nothing on their site is touched until they do."""
+    from app.services import service_desk
+
+    db = pc.db
+    t = _desk_ticket(db, ticket_id)
+    if t.category not in service_desk.SERVICE_CATEGORIES:
+        raise ValidationFailed("Only service requests need authorisation.")
+    if t.status in ("resolved", "closed", "cancelled"):
+        raise ValidationFailed("The request is not open.")
+    if t.remediation_approved_at is not None:
+        raise ValidationFailed("The customer has already authorised this work.")
+    t.proposed_scope, t.authorisation_requested_at = body.scope.strip(), utcnow()
+    text_ = (f"We need your authorisation before changing anything on your website. Proposed scope:\n{t.proposed_scope}"
+             + (f"\n\n{body.message.strip()}" if body.message.strip() else "")
+             + "\n\nPlease review it under 'Authorise the work' on this request.")
+    service_desk.add_message(db, t, pc.principal.user.id, text_, staff=True, kind="auth_request")
+    if t.status != "awaiting_customer":
+        service_desk.set_status(db, t, "awaiting_customer", pc.principal.user.id)
+    service_desk.notify(db, t, to_customer=True, key=f"authreq:{utcnow().timestamp():.0f}",
+                        subject=f"Your authorisation is needed: {t.subject}",
+                        body=f"Before we change anything on your website we need your authorisation.\n\n"
+                             f"Proposed scope:\n{t.proposed_scope}\n\nOpen the request to review and authorise it. "
+                             "Only an organisation owner can authorise.", include_owners=True)
+    audit.record(db, "service_desk.authorisation_requested", actor=pc.actor(), tenant_id=t.tenant_id,
+                 target_type="ticket", target_id=t.id, details={"scope": t.proposed_scope})
+    db.commit()
+    return desk_ticket(ticket_id, pc)

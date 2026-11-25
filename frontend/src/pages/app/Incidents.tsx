@@ -188,6 +188,13 @@ export function IncidentDetailPage() {
   });
   const addNote = useMutation({ mutationFn: () => api.post(`/tenants/${tid}/incidents/${incidentId}/notes`, { body: note }), onSuccess: () => { setNote(""); q.refetch(); }, onError: onErr });
   const assign = useMutation({ mutationFn: (user_id: string | null) => api.post(`/tenants/${tid}/incidents/${incidentId}/assign`, { user_id }), onSuccess: () => q.refetch(), onError: onErr });
+  // One active service request per incident: link to it instead of offering a new one.
+  const requests = useQuery({
+    queryKey: ["incident-requests", tid, incidentId],
+    queryFn: () => api.get<{ items: { id: string; reference: string }[] }>(`/tenants/${tid}/tickets`, { incident_id: incidentId, active: true, page_size: 1 }),
+    enabled: can("support:read"), retry: false,
+  });
+  const existingRequest = requests.data?.items[0];
 
   if (q.error) return <ErrorState error={q.error} onRetry={() => q.refetch()} />;
   if (!q.data) return <LoadingBlock rows={10} />;
@@ -200,12 +207,14 @@ export function IncidentDetailPage() {
       <PageHeader
         title={i.title}
         crumbs={[{ label: "Incidents", to: `/app/${tid}/incidents` }, { label: i.reference }]}
-        actions={can("support:manage") && ["new", "acknowledged", "investigating", "contained"].includes(i.status) && (
+        actions={can("support:manage") && (existingRequest ? (
+          <Button component={Link} variant="light" to={`/app/${tid}/support/${existingRequest.id}`}>View request {existingRequest.reference}</Button>
+        ) : ["new", "acknowledged", "investigating", "contained"].includes(i.status) && (
           <Button component={Link} variant="light"
             to={`/app/${tid}/support?new=${["malware", "suspicious_file", "suspected_compromise", "file_integrity", "log_activity"].includes(i.category) ? "malware_cleanup" : "fix_site"}&incident=${i.id}${i.website_id ? `&website=${i.website_id}` : ""}&subject=${encodeURIComponent(`Help with ${i.reference}: ${i.title}`.slice(0, 190))}`}>
             Ask Trust Data to fix this
           </Button>
-        )}
+        ))}
         description={
           <Group gap="xs" component="span">
             <SeverityBadge severity={i.severity} size="md" />

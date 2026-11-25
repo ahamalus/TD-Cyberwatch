@@ -151,6 +151,20 @@ test("a customer's cleanup request reaches the service desk and the reply comes 
 
   await cust.reload();
   await expect(cust.getByText("We are on it.")).toBeVisible();
+
+  // The engineer asks for authorisation with a proposed scope; the customer sees it pre-filled and authorises.
+  await page.getByRole("button", { name: "Request authorisation" }).click();
+  await expect(page.getByText(/waiting for an owner to authorise/)).toBeVisible();
+  await cust.reload();
+  await expect(cust.getByText("Trust Data is asking for your authorisation")).toBeVisible();
+  await cust.waitForLoadState("networkidle");
+  a11y.push(...(await axe(cust, "customer authorisation prompt")));
+  await cust.getByRole("button", { name: "Authorise" }).click();
+  await cust.getByRole("dialog").getByRole("button", { name: "Authorise" }).click();
+  await expect(cust.getByText(/^Authorised /)).toBeVisible();
+  await page.reload();
+  await expect(page.getByText(/^Authorised /)).toBeVisible();
+  await expect(page.getByText(/Access grant: active/i)).toBeVisible();
   expect(a11y, `WCAG A/AA violations:\n${a11y.join("\n")}`).toEqual([]);
   expect(errors).toEqual([]);
   await ctx.close();

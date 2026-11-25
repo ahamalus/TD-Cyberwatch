@@ -161,6 +161,13 @@ clock), use **internal notes** for anything the customer should not see, tick th
 the **report** (what you found, what you did, how you checked, recommendations). A service request cannot be
 resolved without the report. The customer then confirms and closes it.
 
+**Getting authorisation:** on a service request, the workbench's *Customer authorisation* panel has **Request
+authorisation**: write the exact scope of what you will change (a default for the request type is filled in) and
+send it. The request moves to *Waiting for customer*; the requester and every organisation owner are emailed; the
+customer's request page shows the proposal at the top with the scope pre-filled, and an owner authorises it (as
+proposed, or narrowed). Only owners can authorise. Each incident can have only one active request: a second one
+is refused and the customer is taken to the existing request.
+
 **Access rules:** staff with the service-desk role read requests themselves, but **never change a site or look at
 its monitoring data until the customer authorises the work** on the request page. Authorisation plus an assigned
 engineer automatically creates a 14-day access grant for that engineer (recorded in the audit trail with the
