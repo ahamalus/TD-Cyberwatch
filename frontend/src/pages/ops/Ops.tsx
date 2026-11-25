@@ -22,7 +22,7 @@ import { usePlatformCan } from "../../api/auth";
 import { api, errorMessage } from "../../api/client";
 import type { Job, Page } from "../../api/types";
 import { fmtBytes, fmtDateTime, fmtRelative, humanize, minCharsHint, scanJobDetail } from "../../components/format";
-import { HealthBadge, IncidentStatusBadge, ScanBadge, SeverityBadge } from "../../components/status";
+import { ConnectionBadge, HealthBadge, IncidentStatusBadge, ScanBadge, SeverityBadge } from "../../components/status";
 import { DataTable, EmptyState, ErrorState, KeyValue, LoadingBlock, PageHeader, Section, StatCard } from "../../components/ui";
 
 const onError = (e: unknown) => notifications.show({ color: "threat", title: "Action failed", message: errorMessage(e) });
@@ -342,6 +342,117 @@ export function CapabilityNoticePage({ kind }: { kind: "files" | "logs" | "evide
         <EmptyState icon={IconCmp} title={kind === "logs" ? "Not available in this release" : "Customer data requires a grant"} description={content.body}
           action={<Button component={Link} to={content.link} variant="light">{content.linkLabel}</Button>} />
       </Card>
+    </>
+  );
+}
+
+// ---------------------------------------------------------------- NOC wall
+
+const NOC_STATE: Record<string, { color: string; label: string }> = {
+  down: { color: "threat", label: "Down" },
+  alert: { color: "threat", label: "Incident" },
+  degraded: { color: "amber", label: "Degraded" },
+  unknown: { color: "info", label: "No data yet" },
+  ok: { color: "secure", label: "Operational" },
+  paused: { color: "gray", label: "Paused" },
+};
+
+function NocSiteCard({ s }: { s: any }) {
+  const st = NOC_STATE[s.state] ?? NOC_STATE.unknown;
+  const a = s.availability;
+  const inc = s.open_incidents;
+  return (
+    <Card p="sm" style={{ borderLeft: `5px solid var(--mantine-color-${st.color}-6)` }} aria-label={`${s.name}: ${st.label}`}>
+      <Group justify="space-between" wrap="nowrap" align="flex-start" gap="xs">
+        <Box miw={0}>
+          <Text fw={700} size="sm" truncate>{s.name}</Text>
+          <Text size="xs" c="dimmed" truncate>{s.tenant}{s.is_demo ? " · demo" : ""} · {s.hostname}</Text>
+        </Box>
+        <Badge color={st.color} variant={s.state === "ok" ? "light" : "filled"} style={{ flexShrink: 0 }}>{st.label}</Badge>
+      </Group>
+      {s.state !== "ok" && s.reasons.length > 0 && (
+        <Text size="xs" mt={6} c={s.state === "down" || s.state === "alert" ? "var(--mantine-color-threat-text)" : undefined}>{s.reasons.join(" · ")}</Text>
+      )}
+      <Group gap="md" mt={8} wrap="wrap">
+        <Tooltip label={a.checked_at ? `Last check ${fmtRelative(a.checked_at)}${a.http_status ? ` · HTTP ${a.http_status}` : ""}` : "Not checked yet"}>
+          <Text size="xs"><Text span c="dimmed">Uptime 24h </Text><b>{a.uptime_24h ?? "—"}{a.uptime_24h != null ? "%" : ""}</b></Text>
+        </Tooltip>
+        <Text size="xs"><Text span c="dimmed">Response </Text><b>{a.response_ms != null ? `${a.response_ms} ms` : "—"}</b></Text>
+        <Text size="xs"><Text span c="dimmed">TLS </Text><b>{s.tls.days_left != null ? `${s.tls.days_left}d` : s.tls.status ?? "—"}</b></Text>
+        <Text size="xs"><Text span c="dimmed">Scan </Text><b>{s.file_scan.status ? `${s.file_scan.status} ${fmtRelative(s.file_scan.at)}` : "—"}</b></Text>
+      </Group>
+      <Group gap={6} mt={8}>
+        {s.connection && <Badge size="xs" variant="outline" color={["auth_failed", "error", "disconnected", "expired"].includes(s.connection.status) ? "threat" : s.connection.status === "connected" ? "secure" : "info"}>{humanize(s.connection.connector)} · {humanize(s.connection.status)}</Badge>}
+        {(["critical", "high", "medium", "low"] as const).filter((k) => inc[k]).map((k) => <Badge key={k} size="xs" color={k === "medium" ? "amber" : k === "low" ? "info" : "threat"} variant={k === "critical" ? "filled" : "light"}>{inc[k]} {k}</Badge>)}
+      </Group>
+    </Card>
+  );
+}
+
+export function NocWallPage() {
+  const [demo, setDemo] = useState(false);
+  const [filter, setFilter] = useState<string>("all");
+  const [search, setSearch] = useState("");
+  const q = useQuery({ queryKey: ["ops-noc", demo], queryFn: () => api.get<any>("/ops/noc", { include_demo: demo }), refetchInterval: 15_000 });
+  if (q.error) return <ErrorState error={q.error} onRetry={() => q.refetch()} />;
+  const d = q.data;
+  const term = search.trim().toLowerCase();
+  const sites = (d?.websites ?? []).filter((s: any) =>
+    (filter === "all" || (filter === "problems" ? !["ok", "paused"].includes(s.state) : s.state === filter))
+    && (!term || `${s.name} ${s.tenant} ${s.hostname}`.toLowerCase().includes(term)));
+  const sum = d?.summary ?? {};
+  const inc = d?.open_incidents ?? {};
+  const fullscreen = () => document.documentElement.requestFullscreen?.().catch(() => undefined);
+  return (
+    <>
+      <PageHeader
+        title="NOC wall"
+        description={d ? `Every monitored website and hosting connection, worst first. Updated ${fmtRelative(d.generated_at)}; refreshes every 15 seconds.` : "Loading live status…"}
+        actions={<Group gap="xs"><Button variant="default" size="xs" onClick={fullscreen}>Full screen</Button></Group>}
+      />
+      {d?.platform.alerts.length > 0 && (
+        <Alert color="threat" icon={<IconAlertTriangle />} mb="md" title="Platform alerts">
+          {d.platform.alerts.map((a: any) => <Text size="sm" key={a.message}>[{a.severity}] {a.message}</Text>)}
+        </Alert>
+      )}
+      <SimpleGrid cols={{ base: 2, sm: 4, xl: 8 }} mb="md">
+        <StatCard label="Down" tone={sum.down ? "threat" : "secure"} loading={!d} value={sum.down} />
+        <StatCard label="Incident" tone={sum.alert ? "threat" : "secure"} loading={!d} value={sum.alert} />
+        <StatCard label="Degraded" tone={sum.degraded ? "amber" : "secure"} loading={!d} value={sum.degraded} />
+        <StatCard label="Operational" tone="secure" loading={!d} value={sum.ok} />
+        <StatCard label="No data / paused" tone="info" loading={!d} value={d ? (sum.unknown ?? 0) + (sum.paused ?? 0) : undefined} />
+        <StatCard label="Critical + high open" tone={(inc.critical ?? 0) + (inc.high ?? 0) ? "threat" : "secure"} loading={!d} value={d ? (inc.critical ?? 0) + (inc.high ?? 0) : undefined} to="/ops/incidents" />
+        <StatCard label="Failing connections" icon={IconPlugConnectedX} tone={d?.connections_summary.failing ? "amber" : "secure"} loading={!d} value={d ? `${d.connections_summary.failing}/${d.connections_summary.total}` : undefined} />
+        <StatCard label="Workers" icon={IconCpu} tone={d && d.platform.workers_healthy && !d.platform.workers_failed && d.platform.scheduler_ok ? "secure" : "threat"} loading={!d}
+          value={d ? `${d.platform.workers_healthy} ok` : undefined} context={d && !d.platform.scheduler_ok ? "Scheduler stale" : undefined} to="/ops/workers" />
+      </SimpleGrid>
+      <Group mb="sm" gap="sm" wrap="wrap">
+        <Select size="xs" w={190} aria-label="Show" value={filter} onChange={(v) => setFilter(v ?? "all")} allowDeselect={false}
+          data={[{ value: "all", label: "All websites" }, { value: "problems", label: "Problems only" }, ...Object.entries(NOC_STATE).map(([k, v]) => ({ value: k, label: v.label }))]} />
+        <TextInput size="xs" w={240} placeholder="Search site, organisation or host" aria-label="Search" value={search} onChange={(e) => setSearch(e.currentTarget.value)} />
+        <Select size="xs" w={170} aria-label="Demo organisations" value={demo ? "with" : "without"} onChange={(v) => setDemo(v === "with")} allowDeselect={false}
+          data={[{ value: "without", label: "Hide demo data" }, { value: "with", label: "Include demo data" }]} />
+        <Text size="xs" c="dimmed">{d ? `${sites.length} of ${d.websites.length} websites` : ""}</Text>
+      </Group>
+      {!d ? <LoadingBlock /> : sites.length === 0 ? <EmptyState title={d.websites.length ? "Nothing matches this filter" : "No websites are being monitored yet"} /> : (
+        <SimpleGrid cols={{ base: 1, sm: 2, lg: 3, xl: 4 }} mb="lg">
+          {sites.map((s: any) => <NocSiteCard key={s.id} s={s} />)}
+        </SimpleGrid>
+      )}
+      <Section title="Hosting connections" description="Failing connections first. Fix them from the customer's hosting page (requires a grant) or ask the customer.">
+        <DataTable
+          rows={d?.connections}
+          loading={!d}
+          rowKey={(c: any) => c.id}
+          columns={[
+            { key: "n", header: "Connection", render: (c: any) => <Box><Text size="sm" fw={600}>{c.name}</Text><Text size="xs" c="dimmed">{c.tenant} · {c.hostname}</Text></Box> },
+            { key: "t", header: "Type", render: (c: any) => <Text size="sm">{humanize(c.connector)}</Text>, visibleFrom: "sm" },
+            { key: "s", header: "Status", render: (c: any) => <ConnectionBadge status={c.status} /> },
+            { key: "w", header: "Websites", render: (c: any) => <Text size="sm">{c.websites}</Text>, visibleFrom: "md" },
+            { key: "l", header: "Last success", render: (c: any) => <Tooltip label={c.last_error ?? "No error"} disabled={!c.last_error}><Text size="sm">{fmtRelative(c.last_success_at)}</Text></Tooltip>, visibleFrom: "md" },
+          ]}
+        />
+      </Section>
     </>
   );
 }

@@ -251,6 +251,66 @@ def set_staff_roles(user_id: uuid.UUID, body: RolesIn,
     return {"id": str(u.id), "roles": sorted(body.roles)}
 
 
+class StaffStatusIn(BaseModel):
+    is_active: bool
+
+
+def _staff(db: Session, user_id: uuid.UUID) -> User:
+    u = db.get(User, user_id)
+    if u is None or not u.is_platform_staff:
+        raise NotFound("Staff member not found.")
+    return u
+
+
+@admin.put("/staff/{user_id}/status")
+def set_staff_status(user_id: uuid.UUID, body: StaffStatusIn,
+                     pc: PlatformContext = Depends(require_platform(P.PLATFORM_USERS_MANAGE))) -> dict:
+    """Disable (or re-enable) a staff account. Disabling signs it out everywhere at once."""
+    from app.services.auth import revoke_user_sessions
+
+    db = pc.db
+    if user_id == pc.principal.user.id:
+        raise ValidationFailed("You cannot disable your own account.")
+    u = _staff(db, user_id)
+    if not body.is_active and any(a.role_key == "platform_admin" for a in u.platform_roles):
+        admins = db.execute(select(func.count()).select_from(User).join(PlatformRoleAssignment, PlatformRoleAssignment.user_id == User.id)
+                            .where(PlatformRoleAssignment.role_key == "platform_admin", User.is_active.is_(True))).scalar_one()
+        if admins <= 1:
+            raise ValidationFailed("This is the last active platform administrator.")
+    u.is_active = body.is_active
+    revoked = 0 if body.is_active else revoke_user_sessions(db, u.id)
+    audit.record(db, "admin.staff_enabled" if body.is_active else "admin.staff_disabled", actor=pc.actor(),
+                 target_type="user", target_id=u.id, details={"email": u.email, "sessions_revoked": revoked})
+    db.commit()
+    return {"id": str(u.id), "is_active": u.is_active}
+
+
+@admin.post("/staff/{user_id}/resend-invite")
+def resend_staff_invite(user_id: uuid.UUID, pc: PlatformContext = Depends(require_platform(P.PLATFORM_USERS_MANAGE))) -> Message:
+    from app.core.config import get_settings
+    from app.services.auth import create_email_token
+    from app.services.notifications import queue_simple
+
+    db = pc.db
+    u = _staff(db, user_id)
+    if not u.is_active:
+        raise ValidationFailed("Re-enable the account first.")
+    if u.last_login_at is not None:
+        raise ValidationFailed("This person has already signed in; they can use 'Forgot password' instead.")
+    token = create_email_token(db, u, "password_reset")
+    s = get_settings()
+    queue_simple(db, tenant_id=None, channel="email", recipient=u.email, category="account",
+                 subject=f"Your {s.product_name} staff account",
+                 body=f"An administrator created a staff account for you. Set your password: "
+                      f"{s.public_base_url}/reset-password?token={token}\n\nYou must enrol multi-factor authentication "
+                      "before platform functions become available.",
+                 idempotency_key=f"staff-invite:{u.id}:{utcnow().timestamp():.0f}")
+    audit.record(db, "admin.staff_invite_resent", actor=pc.actor(), target_type="user", target_id=u.id,
+                 details={"email": u.email})
+    db.commit()
+    return Message(message="Invitation email queued.")
+
+
 # ---------------------------------------------------------------- connectors
 
 
@@ -871,3 +931,117 @@ def ops_notifications(pc: PlatformContext = Depends(require_platform(P.OPS_JOBS_
                     .order_by(Notification.created_at.desc()), params, lambda n: {
         "id": str(n.id), "tenant": names.get(n.tenant_id), "channel": n.channel, "category": n.category,
         "status": n.status, "attempts": n.attempts, "last_error": n.last_error, "created_at": n.created_at})
+
+
+# ---------------------------------------------------------------- NOC wall
+
+_RANK = {"down": 0, "alert": 1, "degraded": 2, "unknown": 3, "ok": 4, "paused": 5}
+_BAD_CONNECTION = ("auth_failed", "error", "disconnected", "expired")
+
+
+def _site_state(w: Website, incidents: dict[str, int], conn_status: str | None) -> tuple[str, list[str]]:
+    """Overall state of one website and the reasons, worst first: down > alert > degraded > unknown > ok."""
+    if w.status == "paused":
+        return "paused", ["Monitoring paused"]
+    reasons: list[str] = []
+    state = "ok"
+
+    def worse(s: str, why: str) -> None:
+        nonlocal state
+        reasons.append(why)
+        if _RANK[s] < _RANK[state]:
+            state = s
+
+    if w.last_availability_status in ("down", "error"):
+        worse("down", f"Unreachable ({w.consecutive_availability_failures} failed check(s) in a row)")
+    elif w.last_availability_status == "degraded":
+        worse("degraded", "Slow or unexpected response")
+    if incidents.get("critical") or incidents.get("high"):
+        worse("alert", f"{incidents.get('critical', 0) + incidents.get('high', 0)} open critical/high incident(s)")
+    if w.last_tls_status in ("expired", "invalid", "error"):
+        worse("degraded", f"TLS certificate {w.last_tls_status}")
+    elif w.last_tls_status == "expiring":
+        worse("degraded", "TLS certificate expiring soon")
+    if w.last_scan_status == "failed":
+        worse("degraded", "Last file scan failed")
+    if conn_status in _BAD_CONNECTION:
+        worse("degraded", f"Hosting connection {conn_status.replace('_', ' ')}")
+    if state == "ok" and w.last_availability_status is None and w.last_scan_at is None:
+        state = "unknown"
+        reasons.append("No checks yet")
+    return state, reasons
+
+
+@ops.get("/noc")
+def ops_noc(pc: PlatformContext = Depends(require_platform(P.OPS_JOBS_READ)),
+            include_demo: bool = False) -> dict:
+    """Live status of every monitored website and hosting connection across all organisations (operational
+    metadata only: names, status, counts; incident content and files still need a managed-service grant)."""
+    from app.models import AvailabilityCheck
+
+    db = pc.db
+    now = utcnow()
+    tenants = {t.id: t for t in db.execute(select(Tenant)).scalars()}
+    visible = {tid for tid, t in tenants.items() if include_demo or not t.is_demo}
+    sites = [w for w in db.execute(select(Website).where(Website.status != "deleted")).scalars() if w.tenant_id in visible]
+    accounts = {a.id: a for a in db.execute(select(HostingAccount)).scalars() if a.tenant_id in visible}
+
+    open_inc: dict[uuid.UUID, dict[str, int]] = {}
+    for wid, sev, n in db.execute(select(Incident.website_id, Incident.severity, func.count())
+                                  .where(Incident.status.in_(OPEN_STATUSES), Incident.website_id.is_not(None))
+                                  .group_by(Incident.website_id, Incident.severity)).all():
+        open_inc.setdefault(wid, {})[sev] = n
+    since = now - timedelta(hours=24)
+    uptime = {wid: (up, total) for wid, up, total in db.execute(
+        select(AvailabilityCheck.website_id,
+               func.count().filter(AvailabilityCheck.outcome.in_(["up", "degraded"])), func.count())
+        .where(AvailabilityCheck.checked_at >= since).group_by(AvailabilityCheck.website_id)).all()}
+    latest = {wid: (ms, code) for wid, ms, code in db.execute(
+        select(AvailabilityCheck.website_id, AvailabilityCheck.response_ms, AvailabilityCheck.http_status)
+        .where(AvailabilityCheck.checked_at >= now - timedelta(days=2))
+        .distinct(AvailabilityCheck.website_id)
+        .order_by(AvailabilityCheck.website_id, AvailabilityCheck.checked_at.desc())).all()}
+
+    rows = []
+    for w in sites:
+        acct = accounts.get(w.hosting_account_id) if w.hosting_account_id else None
+        inc = open_inc.get(w.id, {})
+        state, reasons = _site_state(w, inc, acct.status if acct else None)
+        up, total = uptime.get(w.id, (0, 0))
+        ms, code = latest.get(w.id, (None, None))
+        t = tenants[w.tenant_id]
+        rows.append({
+            "id": str(w.id), "tenant_id": str(w.tenant_id), "tenant": t.name, "is_demo": t.is_demo,
+            "name": w.name, "url": w.url, "hostname": w.hostname, "environment": w.environment,
+            "state": state, "reasons": reasons,
+            "availability": {"status": w.last_availability_status, "checked_at": w.last_availability_at,
+                             "response_ms": ms, "http_status": code,
+                             "consecutive_failures": w.consecutive_availability_failures,
+                             "uptime_24h": round(100 * up / total, 1) if total else None, "checks_24h": total},
+            "tls": {"status": w.last_tls_status,
+                    "days_left": (w.tls_expires_at - now).days if w.tls_expires_at else None},
+            "file_scan": {"status": w.last_scan_status, "at": w.last_scan_at},
+            "connection": {"id": str(acct.id), "name": acct.name, "connector": acct.connector_type,
+                           "status": acct.status} if acct else None,
+            "open_incidents": {s: inc.get(s, 0) for s in SEVERITIES},
+        })
+    rows.sort(key=lambda r: (_RANK[r["state"]], -(r["open_incidents"]["critical"] * 100 + r["open_incidents"]["high"]),
+                             r["tenant"].lower(), r["name"].lower()))
+    connections = sorted(({
+        "id": str(a.id), "tenant": tenants[a.tenant_id].name, "name": a.name, "connector": a.connector_type,
+        "hostname": a.hostname, "status": a.status, "last_tested_at": a.last_tested_at,
+        "last_success_at": a.last_success_at, "last_error": a.last_error_message,
+        "websites": sum(1 for w in sites if w.hosting_account_id == a.id)} for a in accounts.values()),
+        key=lambda c: (c["status"] not in _BAD_CONNECTION, c["status"] != "untested", c["tenant"].lower(), c["name"]))
+    summary = {s: sum(1 for r in rows if r["state"] == s) for s in _RANK}
+    health = system_health(db)
+    return {
+        "generated_at": now, "summary": summary, "websites": rows, "connections": connections,
+        "connections_summary": {"total": len(connections),
+                                "failing": sum(1 for c in connections if c["status"] in _BAD_CONNECTION),
+                                "untested": sum(1 for c in connections if c["status"] == "untested")},
+        "open_incidents": {s: sum(r["open_incidents"][s] for r in rows) for s in SEVERITIES},
+        "platform": {"workers_healthy": sum(1 for wk in health["workers"] if wk.get("state") == "healthy"),
+                     "workers_failed": sum(1 for wk in health["workers"] if wk.get("state") == "failed"),
+                     "scheduler_ok": health["scheduler"]["ok"], "alerts": health["alerts"]},
+    }

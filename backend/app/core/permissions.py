@@ -228,6 +228,20 @@ PLATFORM_ROLES: list[RoleDef] = [
         ),
     ),
     RoleDef(
+        "noc_monitor",
+        "NOC Monitor",
+        "platform",
+        "Watches the NOC wall, scan queue, worker health and incidents. Read-only; no customer detail without a grant.",
+        frozenset(
+            {
+                P.PLATFORM_OVERVIEW,
+                P.PLATFORM_HEALTH_READ,
+                P.OPS_JOBS_READ,
+                P.OPS_INCIDENTS_READ,
+            }
+        ),
+    ),
+    RoleDef(
         "ms_operator",
         "Managed-Service Operator",
         "platform",

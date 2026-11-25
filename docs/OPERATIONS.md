@@ -114,6 +114,29 @@
     last 36 hours. If the chain itself is broken, no anchor is published and the recipients are emailed an
     alert.
 
+## Monitoring staff and the NOC wall
+
+**Adding people who watch the platform:** Administration → *Access control* → **Add staff member**. Pick a role:
+
+| Role | For | Can |
+|---|---|---|
+| NOC Monitor | Screen watchers, junior staff | Read-only: NOC wall, security overview, scan queue, incidents list, worker health |
+| Security Operations Analyst | SOC staff who act on findings | The above, plus retry/cancel jobs, act on incidents, hosting diagnostics |
+| Platform Administrator | Managers | Everything, including staff and customers |
+
+They receive an email to set a password and must enrol MFA before anything works. No platform role opens a
+customer's files, evidence or incident details; that still needs the customer's managed-service grant. From the
+same page, **Disable** signs a leaver out everywhere at once (the last platform administrator cannot be
+disabled), and **Resend invite** sends a fresh set-password email to someone who has never signed in.
+
+**NOC wall** (Operations → *NOC Wall*, the start page for monitoring-only staff): every monitored website across
+all organisations, worst first, refreshed every 15 seconds, with a *Full screen* button for a wall display.
+Each site is **Down** (failing availability checks), **Incident** (open critical/high incident), **Degraded**
+(slow, TLS expiring or invalid, last file scan failed, or its hosting connection failing), **Operational**,
+**No data yet** or **Paused**, with the reasons, 24-hour uptime, response time, TLS days left, last scan and open
+incident counts. Hosting connections are listed underneath, failing ones first. Demo organisations are hidden
+unless *Include demo data* is selected.
+
 ## Common problems
 
 | Symptom | Likely cause | Action |

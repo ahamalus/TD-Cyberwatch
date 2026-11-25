@@ -205,6 +205,16 @@ export function AccessControlPage() {
   const platformRoles = (roles.data ?? []).filter((r) => r.scope === "platform").map((r) => ({ value: r.key, label: r.name }));
   const create = useMutation({ mutationFn: () => api.post("/admin/staff", form), onSuccess: () => { close(); staff.refetch(); notifications.show({ color: "secure", title: "Staff account created", message: "An email to set the password was queued." }); }, onError });
   const setRoles = useMutation({ mutationFn: ({ id, r }: { id: string; r: string[] }) => api.put(`/admin/staff/${id}/roles`, { roles: r }), onSuccess: () => staff.refetch(), onError });
+  const setActive = useMutation({
+    mutationFn: ({ id, active }: { id: string; active: boolean }) => api.put(`/admin/staff/${id}/status`, { is_active: active }),
+    onSuccess: (_, v) => { staff.refetch(); notifications.show({ color: "secure", title: v.active ? "Account re-enabled" : "Account disabled", message: v.active ? "They can sign in again." : "They were signed out everywhere." }); },
+    onError,
+  });
+  const resend = useMutation({
+    mutationFn: (id: string) => api.post(`/admin/staff/${id}/resend-invite`, {}),
+    onSuccess: () => notifications.show({ color: "secure", title: "Invitation sent", message: "A new set-password email was queued." }),
+    onError,
+  });
   return (
     <>
       <PageHeader title="Access control" description="Least-privilege roles for Trust Data personnel. Platform roles never grant customer data access on their own." actions={staff.data && <Button leftSection={<IconPlus size={16} />} onClick={open}>Add staff member</Button>} />
@@ -219,7 +229,17 @@ export function AccessControlPage() {
                 { key: "n", header: "Name", render: (s) => <Box><Text size="sm" fw={600}>{s.full_name}</Text><Text size="xs" c="dimmed">{s.email}</Text></Box> },
                 { key: "r", header: "Roles", render: (s) => <MultiSelect size="xs" data={platformRoles} value={s.roles} onChange={(r) => setRoles.mutate({ id: s.id, r })} w={300} aria-label={`Roles for ${s.email}`} /> },
                 { key: "m", header: "MFA", render: (s) => <Badge color={s.mfa_enabled ? "secure" : "threat"}>{s.mfa_enabled ? "Enrolled" : "Not enrolled"}</Badge> },
-                { key: "l", header: "Last sign-in", render: (s) => <Text size="sm">{fmtRelative(s.last_login_at)}</Text>, visibleFrom: "md" },
+                { key: "l", header: "Last sign-in", render: (s) => <Text size="sm">{s.last_login_at ? fmtRelative(s.last_login_at) : "Never (invited)"}</Text>, visibleFrom: "md" },
+                { key: "a", header: "Account", render: (s) => (
+                  <Group gap={6} wrap="nowrap">
+                    <Badge color={s.is_active ? "secure" : "gray"}>{s.is_active ? "Active" : "Disabled"}</Badge>
+                    {s.is_active && !s.last_login_at && <Button size="compact-xs" variant="subtle" onClick={() => resend.mutate(s.id)} loading={resend.isPending && resend.variables === s.id}>Resend invite</Button>}
+                    <Button size="compact-xs" variant="subtle" color={s.is_active ? "threat" : "secure"}
+                      onClick={() => (s.is_active ? window.confirm(`Disable ${s.email}? They will be signed out immediately.`) : true) && setActive.mutate({ id: s.id, active: !s.is_active })}>
+                      {s.is_active ? "Disable" : "Re-enable"}
+                    </Button>
+                  </Group>
+                ) },
               ]}
             />
           )}
@@ -241,7 +261,7 @@ export function AccessControlPage() {
           <TextInput label="Full name" value={form.full_name} onChange={(e) => setForm({ ...form, full_name: e.currentTarget.value })} />
           <TextInput label="Email" value={form.email} onChange={(e) => setForm({ ...form, email: e.currentTarget.value })} />
           <MultiSelect label="Roles" data={platformRoles} value={form.roles} onChange={(r) => setForm({ ...form, roles: r })} />
-          <Text size="xs" c="dimmed">The staff member must enrol MFA before any platform permission takes effect.</Text>
+          <Text size="xs" c="dimmed">They receive an email to set a password, and must enrol MFA before any platform permission takes effect. For people who only watch the NOC wall, choose <b>NOC Monitor</b> (read-only).</Text>
           <Button onClick={() => create.mutate()} loading={create.isPending} disabled={!form.email || !form.full_name || !form.roles.length}>Create account</Button>
         </Stack>
       </Modal>

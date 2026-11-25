@@ -67,7 +67,12 @@ export function isSafeRedirect(next: string | null): boolean {
 
 function landingFor(me: Me): string {
   if (me.memberships.length) return `/app/${me.memberships[0].tenant_id}/overview`;
-  if (me.is_platform_staff) return me.platform_mfa_required ? "/staff/security" : "/admin";
+  if (me.is_platform_staff) {
+    if (me.platform_mfa_required) return "/staff/security";
+    // Monitoring-only staff (NOC Monitor, SOC analyst) start on the NOC wall; administrators on the admin portal.
+    const p = me.platform_permissions ?? [];
+    return p.includes("ops:jobs:read") && !p.includes("platform:tenants:read") ? "/ops/noc" : "/admin";
+  }
   return "/login";
 }
 

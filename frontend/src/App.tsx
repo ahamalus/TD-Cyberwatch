@@ -9,6 +9,7 @@ import {
   IconChartBar,
   IconClipboardList,
   IconCpu,
+  IconDeviceDesktopAnalytics,
   IconCreditCard,
   IconFileDiff,
   IconFileSearch,
@@ -195,6 +196,7 @@ export function opsNavGroups(can: (perm: string) => boolean): NavGroup[] {
       label: "Security Operations",
       items: [
         { label: "Security Overview", to: "/ops/overview", icon: IconLayoutDashboard, visible: can("ops:jobs:read") },
+        { label: "NOC Wall", to: "/ops/noc", icon: IconDeviceDesktopAnalytics, visible: can("ops:jobs:read") },
         { label: "Scan Queue", to: "/ops/jobs", icon: IconActivity, visible: can("ops:jobs:read") },
         { label: "Hosting Diagnostics", to: "/ops/diagnostics", icon: IconServer, visible: can("ops:diagnostics") },
         { label: "File Integrity", to: "/ops/files", icon: IconFingerprint },
@@ -328,6 +330,7 @@ export function App() {
       <Route path="/ops" element={<RequireAuth><OpsLayout /></RequireAuth>}>
         <Route index element={<Navigate to="overview" replace />} />
         <Route path="overview" element={<Ops.OpsOverviewPage />} />
+        <Route path="noc" element={<Ops.NocWallPage />} />
         <Route path="jobs" element={<Ops.ScanQueuePage />} />
         <Route path="diagnostics" element={<Ops.DiagnosticsPage />} />
         <Route path="files" element={<Ops.CapabilityNoticePage kind="files" />} />
