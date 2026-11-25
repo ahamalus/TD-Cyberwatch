@@ -135,6 +135,37 @@ def rules_selftest() -> dict:
     return stats
 
 
+# Daily jobs that must not be skipped when the server was off at their scheduled time (power cuts): if the last
+# run is older than this, the catch-up task starts them as soon as the scheduler is running again.
+DAILY_CATCH_UP = {"retention_cleanup": "cw.retention_cleanup", "audit_anchor": "cw.audit_anchor",
+                  "rules_selftest": "cw.rules_selftest"}
+DAILY_QUEUES = {"rules_selftest": "checks"}
+CATCH_UP_AFTER_HOURS = 26
+
+
+@celery_app.task(name="cw.catch_up_daily")
+def catch_up_daily() -> dict:
+    from datetime import timedelta
+
+    from sqlalchemy import select
+
+    started = []
+    now = utcnow()
+    with platform_session() as s:
+        state = {r.name: r for r in s.execute(select(SchedulerState)).scalars()}
+    for name, task in DAILY_CATCH_UP.items():
+        last = state.get(name)
+        dispatched = state.get(f"catch_up:{name}")
+        overdue = last is None or last.last_run_at < now - timedelta(hours=CATCH_UP_AFTER_HOURS)
+        recently_started = dispatched is not None and dispatched.last_run_at > now - timedelta(hours=3)
+        if overdue and not recently_started and last is not None:  # never-run jobs wait for their normal time
+            celery_app.send_task(task, queue=DAILY_QUEUES.get(name, "default"))
+            _record_scheduler(f"catch_up:{name}", {"reason": "missed its scheduled run", "last_run_at": last.last_run_at.isoformat()})
+            log.warning("daily_job_catch_up", job=name, last_run_at=last.last_run_at.isoformat())
+            started.append(name)
+    return {"started": started}
+
+
 def _record_scheduler(name: str, result: dict) -> None:
     with platform_session() as s:
         stmt = pg_insert(SchedulerState).values(name=name, last_run_at=utcnow(), last_result=result)

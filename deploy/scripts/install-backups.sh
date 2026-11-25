@@ -43,11 +43,11 @@ MSG
   echo "==> Private key removed from this server. Public key: $(cat /etc/cyberwatch/backup.pub)"
 fi
 
-echo "==> Nightly schedule (02:17 UTC = 03:17 in Lagos)"
+echo "==> Schedule: checked hourly; runs when the last backup is over 23 h old (nightly ~02:17 UTC, and within an hour after a power cut)"
 cat > /etc/cron.d/cyberwatch-backup <<CRON
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-17 2 * * * root BACKUP_GROUP=$READER $APP_DIR/deploy/scripts/backup.sh >> /var/log/cyberwatch-backup.log 2>&1
+17 * * * * root BACKUP_GROUP=$READER $APP_DIR/deploy/scripts/backup.sh --if-older-than 23 >> /var/log/cyberwatch-backup.log 2>&1
 CRON
 chmod 644 /etc/cron.d/cyberwatch-backup
 cat > /etc/logrotate.d/cyberwatch-backup <<'ROT'

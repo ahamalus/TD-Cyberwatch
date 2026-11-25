@@ -38,6 +38,8 @@ celery_app.conf.update(
         "rules-selftest": {
             "task": "cw.rules_selftest", "schedule": crontab(hour=3, minute=41), "options": {"queue": "checks"},
         },
+        # Runs any daily job above that was missed because the server was off (e.g. a power cut).
+        "catch-up-daily": {"task": "cw.catch_up_daily", "schedule": 900.0, "options": {"queue": "default"}},
         "subscription-maintenance": {
             "task": "cw.subscription_maintenance", "schedule": crontab(minute=7), "options": {"queue": "default"},
         },

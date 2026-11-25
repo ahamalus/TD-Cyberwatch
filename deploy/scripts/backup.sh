@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # Nightly backup: PostgreSQL dump + report/evidence storage, encrypted with age, with retention.
 #
-#   sudo /opt/cyberwatch/deploy/scripts/backup.sh          (install-backups.sh schedules it nightly)
+#   sudo /opt/cyberwatch/deploy/scripts/backup.sh          (install-backups.sh schedules it)
+#   sudo /opt/cyberwatch/deploy/scripts/backup.sh --if-older-than 23
+#        only if the newest successful database backup is older than 23 hours. Scheduled hourly, this both
+#        makes the nightly backup and catches up within an hour when the server was off (power cut).
 #
 # Only the PUBLIC age key is on this server (/etc/cyberwatch/backup.pub or AGE_RECIPIENT); the private key
 # that can decrypt backups is kept off the server. Each step is checked: a failed or empty dump is reported
@@ -10,6 +13,11 @@ set -uo pipefail
 cd "$(dirname "$0")/../.." || exit 1
 
 BACKUP_DIR=${BACKUP_DIR:-/var/backups/cyberwatch}
+if [ "${1:-}" = "--if-older-than" ]; then
+  hours=${2:?--if-older-than needs a number of hours}
+  newest=$(find "$BACKUP_DIR" -maxdepth 1 -name 'db-*.dump.age' -size +0 -mmin "-$((hours * 60))" 2>/dev/null | head -n 1)
+  [ -n "$newest" ] && exit 0   # a recent backup exists: nothing to do
+fi
 RETENTION_DAYS=${RETENTION_DAYS:-30}
 KEEP_MIN=${KEEP_MIN:-7}
 BACKUP_GROUP=${BACKUP_GROUP:-}   # optional: group allowed to read the (encrypted) files, for off-site copies

@@ -209,6 +209,21 @@ and runs a live check. Reading it:
   the server's public IP. These show as *Degraded*, never *Down*.
 - `http_status` 5xx: the site itself is returning errors (PHP errors, database down, resource limits).
 
+## Power cuts and unclean shutdowns
+
+After an outage the containers restart on their own (`restart: unless-stopped`) and PostgreSQL recovers from its
+write-ahead log. Missed work catches up without action:
+- **Backups** are checked hourly (`/etc/cron.d/cyberwatch-backup`, `backup.sh --if-older-than 23`): the backup runs
+  as soon as the newest one is over 23 hours old, so within an hour of power returning. Servers set up before this
+  change still have the old nightly-only line; update it once with:
+  `sudo sed -i 's|^17 2 \* \* \* \(.*backup.sh\)|17 * * * * \1 --if-older-than 23|' /etc/cron.d/cyberwatch-backup`
+- **Daily jobs** (retention cleanup, audit anchor, rules self-test) that missed their time are started by the
+  scheduler's catch-up check (every 15 minutes, once a job is over 26 hours late).
+
+To reduce outages: put the Windows host on a UPS whose software shuts the host down cleanly on low battery, and set
+the VM to shut down cleanly and start automatically with the host:
+`Set-VM -Name cyberwatch -AutomaticStopAction ShutDown -AutomaticStartAction Start -AutomaticStartDelay 60`.
+
 ## Common problems
 
 | Symptom | Likely cause | Action |
