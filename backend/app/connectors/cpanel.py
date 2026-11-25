@@ -212,6 +212,8 @@ class CPanelFileSource(FileSource):
         self._client = client
         # UAPI fetches one file per HTTPS request; a few at a time stays within shared-hosting process limits.
         self.parallel_reads = max(1, get_settings().cpanel_parallel_reads)
+        # File sizes from directory listings: every downloaded file is checked against its real size.
+        self._sizes: dict[str, int] = {}
 
     def close(self) -> None:
         self._client.close()
@@ -237,8 +239,11 @@ class CPanelFileSource(FileSource):
             name = item.get("file") or posixpath.basename(str(item.get("fullpath", "")).rstrip("/"))
             if not name:
                 continue
-            join_rel(rel, name)  # validates the name
+            child = join_rel(rel, name)  # validates the name
             etype = _TYPE_MAP.get(str(item.get("type", "")).lower(), "other")
+            size = _parse_int(item.get("size")) if etype == "file" else None
+            if size is not None:
+                self._sizes[child if rel not in ("", ".") else name] = size
             out.append(
                 RemoteEntry(
                     name=name,
@@ -250,30 +255,43 @@ class CPanelFileSource(FileSource):
             )
         return out
 
+    def _fetch(self, rel: str, parent: str, name: str, convert: bool) -> bytes:
+        """File bytes from get_file_content. ``update_html_document_encoding=0`` stops cPanel rewriting the
+        <meta charset> of HTML (its default), which silently changed files containing HTML. With ``convert``,
+        cPanel is asked to treat the bytes as ISO-8859-1 so every byte survives the JSON round trip."""
+        query = {"dir": parent.lstrip("/") or ".", "file": name, "update_html_document_encoding": "0"}
+        if convert:
+            query |= {"from_charset": "ISO-8859-1", "to_charset": "UTF-8"}
+        content = _content(self._client.call("Fileman", "get_file_content", query), rel)
+        try:
+            return content.encode("latin-1") if convert else content.encode("utf-8")
+        except UnicodeEncodeError as exc:
+            if convert:  # the server did not convert: the text is the file's own (UTF-8) characters
+                return content.encode("utf-8")
+            raise ConnectorError(E_PROTOCOL, f"Content of {rel} could not be recovered byte-exactly; not hashed.") from exc
+
     def read_chunks(self, rel_path: str, chunk_size: int = 65536) -> Iterator[bytes]:
         rel = safe_rel(rel_path)
         parent, name = posixpath.split(self.absolute(rel))
-        data = self._client.call(
-            "Fileman",
-            "get_file_content",
-            {
-                "dir": parent.lstrip("/") or ".",
-                "file": name,
-                "from_charset": "ISO-8859-1",
-                "to_charset": "UTF-8",
-            },
-        )
-        content = data.get("content") if isinstance(data, dict) else None
-        if not isinstance(content, str):
-            raise ConnectorError(E_PROTOCOL, f"No content returned for {rel}.")
-        try:
-            raw = content.encode("latin-1")
-        except UnicodeEncodeError as exc:
-            raise ConnectorError(
-                E_PROTOCOL, f"Content of {rel} could not be recovered byte-exactly; not hashed."
-            ) from exc
+        expected = self._sizes.get(rel)
+        raw = self._fetch(rel, parent, name, convert=True)
+        if expected is not None and len(raw) != expected:
+            # Some servers ignore the charset request and return the text as is: try that reading.
+            alt = self._fetch(rel, parent, name, convert=False)
+            if len(alt) != expected:
+                raise ConnectorError(
+                    E_PROTOCOL, f"cPanel returned {len(raw)} bytes for {rel}, which is {expected} bytes on disk: the "
+                    "content is not byte-exact, so it was not fingerprinted.")
+            raw = alt
         for i in range(0, len(raw), chunk_size):
             yield raw[i : i + chunk_size]
+
+
+def _content(data: Any, rel: str) -> str:
+    content = data.get("content") if isinstance(data, dict) else None
+    if not isinstance(content, str):
+        raise ConnectorError(E_PROTOCOL, f"No content returned for {rel}.")
+    return content
 
 
 class CPanelUAPIConnector(Connector):

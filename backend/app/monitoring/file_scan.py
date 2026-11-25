@@ -34,7 +34,7 @@ from app.models import (
     SoftwareInstall,
     Website,
 )
-from app.models.incidents import SEVERITY_RANK
+from app.models.incidents import OPEN_STATUSES, SEVERITY_RANK, Incident
 from app.monitoring import guarded, malware, vendor
 from app.monitoring.inventory import (
     DEFAULT_EXCLUSIONS,
@@ -576,6 +576,32 @@ def _raise_vendor_incidents(db: Session, website: Website, snapshot: FileSnapsho
     return opened
 
 
+VENDOR_RULES = ("wordpress_core_modified", "wordpress_core_unexpected_file", "wordpress_plugin_modified")
+
+
+def _resolve_verified_vendor_incidents(db: Session, website: Website, report: vendor.VendorReport,
+                                       entries: dict) -> int:
+    """Open "differs from the official release" incidents whose files all match the official release now (e.g.
+    after a fix, an update, or a corrected reading) are resolved automatically, with the reason recorded."""
+    from app.services.audit import SYSTEM_ACTOR
+
+    resolved = 0
+    for inc in db.execute(select(Incident).where(
+            Incident.website_id == website.id, Incident.rule_key.in_(VENDOR_RULES),
+            Incident.status.in_(OPEN_STATUSES))).scalars():
+        paths = [r["path"] for r in (inc.affected_resources or []) if isinstance(r, dict) and r.get("path")]
+        if not paths:
+            continue
+        # Every file is now verified genuine, or gone (a removed unexpected file).
+        if all(report.is_verified(p) or (p not in entries and report.status.get(p) is None) for p in paths):
+            incident_svc.change_status(
+                db, inc, "resolved", SYSTEM_ACTOR,
+                note="Resolved automatically: the latest scan found every affected file identical to the official "
+                     "release (or removed).")
+            resolved += 1
+    return resolved
+
+
 def _persist_installs(db: Session, website: Website, report: vendor.VendorReport, complete: bool) -> None:
     now = utcnow()
     seen: set[tuple[str, str, str]] = set()
@@ -806,6 +832,8 @@ def run_file_scan(
                                            prev_entries if prev else {})
     if vendor_report is not None:
         opened += _raise_vendor_incidents(db, website, snapshot, vendor_report, previous_vendor, result.entries, demo)
+        if result.status == "completed":
+            _resolve_verified_vendor_incidents(db, website, vendor_report, result.entries)
 
     website.last_scan_at = snapshot.completed_at
     website.last_scan_status = snapshot.status

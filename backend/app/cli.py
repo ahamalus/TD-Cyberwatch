@@ -351,6 +351,21 @@ def cmd_health() -> None:
         sys.exit(1)
 
 
+def _pick_website(db, host: str):
+    """Exact hostname (with or without www.) first; a partial match only if it is the only one."""
+    from app.models import Website
+
+    bare = host.removeprefix("www.")
+    exact = db.execute(select(Website).where(Website.hostname.in_([bare, f"www.{bare}"]))).scalars().all()
+    if len(exact) == 1:
+        return exact[0]
+    matches = exact or db.execute(select(Website).where(Website.hostname.ilike(f"%{bare}%"))).scalars().all()
+    if len(matches) != 1:
+        listing = "\n".join(f"  {m.hostname}  ({m.name})" for m in matches) or "  (none)"
+        sys.exit(f"{len(matches)} websites match {host!r}; give the exact address:\n{listing}")
+    return matches[0]
+
+
 def cmd_compare_file(host: str, path: str) -> None:
     """Diagnose fingerprint mismatches: is what the monitoring connector reads byte-identical to the file?"""
     import hashlib
@@ -363,15 +378,14 @@ def cmd_compare_file(host: str, path: str) -> None:
         HostingAccount,
         HostingCredential,
         RemediationCredential,
-        Website,
     )
     from app.services import remediation
 
     host = host.lower().removeprefix("https://").removeprefix("http://").strip("/")
     with platform_session() as db:
-        w = db.execute(select(Website).where(Website.hostname.ilike(f"%{host}%"))).scalars().first()
-        if w is None or w.hosting_account_id is None:
-            sys.exit(f"No website with hosting matches {host!r}.")
+        w = _pick_website(db, host)
+        if w.hosting_account_id is None:
+            sys.exit(f"{w.name} has no hosting connection.")
         a = db.get(HostingAccount, w.hosting_account_id)
         cred = db.execute(select(HostingCredential).where(HostingCredential.hosting_account_id == a.id)).scalar_one_or_none()
         mon = build_connector(a, cred, db.get(ConnectorDefinition, a.connector_type))
