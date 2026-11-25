@@ -19,6 +19,7 @@ export CW_STORAGE_DIR="$STATE/storage"
 export CW_CLAMAV_HOST=
 export CW_VENDOR_CHECKSUMS_ENABLED=false
 export CW_SMTP_HOST=
+export CW_AVAILABILITY_RETRY_SECONDS=0
 
 rm -rf "$STATE" && mkdir -p "$STATE/storage" "$STATE/site"
 cp -R "$ROOT/deploy/local/sample-site-original/." "$STATE/site/"

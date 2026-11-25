@@ -19,6 +19,7 @@ os.environ["CW_COOKIE_SECURE"] = "false"
 os.environ["CW_OUTBOUND_ALLOW_CIDRS"] = '["127.0.0.0/8"]'
 os.environ["CW_STORAGE_DIR"] = "/tmp/cw-test-storage"  # noqa: S108
 os.environ["CW_TRIAL_DAYS"] = "14"
+os.environ["CW_AVAILABILITY_RETRY_SECONDS"] = "0"  # confirm failures immediately (no 20 s wait)
 # No calls to wordpress.org from tests; tests of checksum verification enable it with a mocked transport.
 os.environ["CW_VENDOR_CHECKSUMS_ENABLED"] = "false"
 

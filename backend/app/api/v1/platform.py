@@ -920,7 +920,39 @@ def ops_connections(pc: PlatformContext = Depends(require_platform(P.OPS_DIAGNOS
 
 @ops.get("/health")
 def ops_health(pc: PlatformContext = Depends(require_platform(P.PLATFORM_HEALTH_READ))) -> dict:
-    return system_health(pc.db)
+    return system_health(pc.db) | {"alerting": _alerting_status(pc.db)}
+
+
+def _alerting_status(db: Session) -> dict:
+    from app.core.config import get_settings
+    from app.models import PlatformSetting
+    from app.services import platform_alerts
+
+    s = get_settings()
+    row = db.get(PlatformSetting, platform_alerts.STATE_KEY)
+    return {"active": s.platform_alerts_enabled and s.is_production_like,
+            "recipients": platform_alerts.recipients(db),
+            "smtp_configured": bool(s.smtp_host),
+            "last_evaluated_at": row.updated_at if row else None,
+            "open": sorted((row.value or {}).values(), key=lambda a: a["first_seen"]) if row else []}
+
+
+@admin.post("/platform-alerts/test")
+def test_platform_alert(pc: PlatformContext = Depends(require_platform(P.PLATFORM_USERS_MANAGE))) -> dict:
+    """Send a test platform alert to everyone who would receive a real one."""
+    from app.services import platform_alerts
+
+    to = platform_alerts.recipients(pc.db)
+    if not to:
+        raise ValidationFailed("Nobody would receive platform alerts: add staff with health access or CW_PLATFORM_ALERT_EMAILS.")
+    sent = platform_alerts.deliver(
+        to, "[CyberWatch] Test platform alert",
+        "This is a test of CyberWatch platform alerting, sent from System Health.\n\nReal alerts arrive when a "
+        "worker, the scheduler, the database, Redis, backups, disk space or the malware scanner has a problem "
+        "for more than 3 minutes, with reminders until fixed and an all-clear when resolved.", None)
+    audit.record(pc.db, "platform.alert_test_sent", actor=pc.actor(), details={"recipients": len(sent), "attempted": len(to)})
+    pc.db.commit()
+    return {"sent": sent, "failed": sorted(set(to) - set(sent))}
 
 
 @ops.get("/notifications")

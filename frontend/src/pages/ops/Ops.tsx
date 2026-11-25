@@ -276,6 +276,29 @@ export function OpsMalwarePage() {
   );
 }
 
+function AlertingSection({ alerting }: { alerting?: any }) {
+  const can = usePlatformCan();
+  const test = useMutation({
+    mutationFn: () => api.post<{ sent: string[]; failed: string[] }>("/admin/platform-alerts/test", {}),
+    onSuccess: (r) => notifications.show({ color: r.failed.length ? "amber" : "secure", title: "Test alert sent",
+      message: `Sent to ${r.sent.length}${r.failed.length ? `; failed: ${r.failed.join(", ")}` : ""}.` }),
+    onError,
+  });
+  if (!alerting) return null;
+  const ok = alerting.active && alerting.smtp_configured && alerting.recipients.length > 0;
+  return (
+    <Section title="Platform alerting" description="Emails staff when anything on this page stays unhealthy for 3 minutes, with reminders and an all-clear.">
+      <HealthBadge state={ok ? "healthy" : "degraded"} tooltip={!alerting.active ? "Runs only in staging/production." : !alerting.smtp_configured ? "SMTP is not configured." : undefined} />
+      <KeyValue items={[
+        ["Recipients", alerting.recipients.length ? alerting.recipients.join(", ") : "Nobody"],
+        ["Last check", alerting.last_evaluated_at ? fmtRelative(alerting.last_evaluated_at) : "Not yet"],
+        ["Open", alerting.open.length ? alerting.open.map((a: any) => `${a.message}${a.last_notified ? " (reported)" : ""}`).join("; ") : "None"],
+      ]} />
+      {can("platform:users:manage") && <Button size="xs" variant="default" mt="xs" onClick={() => test.mutate()} loading={test.isPending}>Send test alert</Button>}
+    </Section>
+  );
+}
+
 export function WorkerHealthPage() {
   const q = useQuery({ queryKey: ["ops-health"], queryFn: () => api.get<any>("/ops/health"), refetchInterval: 15_000, retry: false });
   if (q.error) return <ErrorState error={q.error} />;
@@ -302,6 +325,7 @@ export function WorkerHealthPage() {
         <Section title="Backups">
           {d.backup ? <KeyValue items={[["Status", <HealthBadge key="b" state={d.backup.status === "ok" ? "healthy" : "failed"} />], ["Reported", fmtDateTime(d.backup.reported_at)], ["Location", d.backup.location]]} /> : <Text size="sm" c="var(--cw-light-text-amber)">No backup has been reported.</Text>}
         </Section>
+        <AlertingSection alerting={d.alerting} />
         <Section title="Job latency and durations (24h)">
           <KeyValue items={[["Avg queue wait", d.avg_queue_latency_seconds === null ? "—" : `${d.avg_queue_latency_seconds}s`], ...Object.entries(d.avg_duration_seconds_by_type).map(([k, v]: [string, any]) => [humanize(k), `${v.avg}s avg · ${v.count} jobs`] as [string, string])]} />
           {d.resource_usage?.load_avg && <Text size="xs" c="dimmed" mt="xs">API host load: {d.resource_usage.load_avg.join(" / ")}</Text>}

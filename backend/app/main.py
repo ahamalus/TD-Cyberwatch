@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 import uuid
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -45,6 +46,15 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         return response
 
 
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    # Self-monitoring runs in the API, not Celery, so it still works when workers or the scheduler are down.
+    from app.services.platform_alerts import start_watchdog
+
+    start_watchdog()
+    yield
+
+
 def create_app() -> FastAPI:
     settings = get_settings()
     configure_logging(json=settings.environment != "development")
@@ -65,6 +75,7 @@ def create_app() -> FastAPI:
         redoc_url=None,
         openapi_url="/api/openapi.json" if not settings.is_production_like else None,
         debug=settings.debug and not settings.is_production_like,
+        lifespan=lifespan,
     )
     install_error_handlers(app)
     app.add_middleware(SecurityHeadersMiddleware)
@@ -80,6 +91,7 @@ def create_app() -> FastAPI:
     from app.api.v1 import router as v1
 
     app.include_router(v1.api_router, prefix="/api/v1")
+
     return app
 
 

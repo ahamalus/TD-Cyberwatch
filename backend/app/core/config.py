@@ -66,6 +66,7 @@ class Settings(BaseSettings):
     connect_timeout_seconds: float = 15.0
     io_timeout_seconds: float = 60.0
     http_check_timeout_seconds: float = 15.0
+    availability_retry_seconds: float = 20.0  # wait before confirming a failed check (negative: no retry)
 
     # Jobs
     job_max_attempts: int = 3
@@ -98,6 +99,10 @@ class Settings(BaseSettings):
     # Off-server copies of the audit-trail anchor (JSON list, e.g. '["audit@yourcompany.com"]'). Use a mailbox
     # that server administrators cannot alter. Nightly backups also store anchors (see services/audit_anchor.py).
     audit_anchor_emails: list[str] = Field(default_factory=list)
+    # Platform self-monitoring (services/platform_alerts.py): extra recipients besides staff with health access,
+    # and a switch for the in-API watchdog (it only runs in staging/production).
+    platform_alert_emails: list[str] = Field(default_factory=list)
+    platform_alerts_enabled: bool = True
 
     # Personal-data retention (NDPA storage limitation): sign-in history and ended sessions.
     login_history_days: int = 365

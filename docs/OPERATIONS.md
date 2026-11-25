@@ -137,6 +137,20 @@ Each site is **Down** (failing availability checks), **Incident** (open critical
 incident counts. Hosting connections are listed underneath, failing ones first. Demo organisations are hidden
 unless *Include demo data* is selected.
 
+## Investigating a website that keeps failing availability checks
+```
+sudo -u cyberwatch docker compose exec api python -m app.cli availability-report example.com 3
+```
+(use any part of the hostname). It lists the last N days' checks grouped by result and cause, failures by hour,
+and runs a live check. Reading it:
+- `timeout` / `connection_failed` at random times: real instability at the host; scattered single failures are
+  now retried after 20 s before counting.
+- Failures clustered at the same hours each day: host backups or resource limits (CPU/entry processes) at those times.
+- `blocked_by_firewall` (Imunify360, Cloudflare, ModSecurity, Sucuri, Wordfence, CAPTCHA): the site is fine but
+  is blocking our checker; ask the host or site owner to allow-list User-Agent `TrustData-CyberWatch-Monitor` /
+  the server's public IP. These show as *Degraded*, never *Down*.
+- `http_status` 5xx: the site itself is returning errors (PHP errors, database down, resource limits).
+
 ## Common problems
 
 | Symptom | Likely cause | Action |
@@ -167,4 +181,18 @@ unless *Include demo data* is selected.
 Nightly task prunes non-baseline snapshots older than the plan's `retention_days` (keeping the 5 most recent per website), availability/TLS history and delivered notifications. Audit events and incident evidence are retained.
 
 ## Alerting on infrastructure
-`/api/v1/health/ready` (DB + Redis) is suitable for an external uptime monitor. System Health alerts list critical conditions; wire them to your on-call channel by polling `/api/v1/ops/health` with a staff session or by log-based alerts on `worker_heartbeat_failed`, `job_failed`, `unhandled_error`.
+**Platform alerts (built in).** When a System Health alert (no worker, scheduler stale, database or Redis down,
+disk above 85%, no recent backup, malware scanner down, a quarantined rule) lasts more than 3 minutes, CyberWatch
+emails every active staff member whose role can read platform health (administrators, SOC analysts, NOC
+monitors, auditors) plus `CW_PLATFORM_ALERT_EMAILS`. Reminders: every 2 h (critical), 6 h (high), 24 h
+(medium); one "Resolved" email when it clears. The check runs inside the API process, not Celery, and sends
+over SMTP directly, so it still works when workers, the scheduler or the notification queue are down. If the
+database itself is unreachable, only `CW_PLATFORM_ALERT_EMAILS` can be told (hourly), so set at least one
+address there. *Ops → Worker Health → Platform alerting* shows the recipients, open alerts and a **Send test
+alert** button.
+
+**External check (set this up too).** Nothing inside a server can report that the server is off. Point a free
+uptime service (Cloudflare Health Checks, UptimeRobot, Better Stack) at
+`https://cyberwatch.trustdata.ng/api/v1/health/ready` every 5 minutes, alerting the same people.
+
+`/api/v1/health/ready` (DB + Redis) is suitable for that external uptime monitor. System Health alerts list critical conditions; wire them to your on-call channel by polling `/api/v1/ops/health` with a staff session or by log-based alerts on `worker_heartbeat_failed`, `job_failed`, `unhandled_error`.

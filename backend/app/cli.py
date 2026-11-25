@@ -13,6 +13,7 @@
     python -m app.cli send-test-email ADDRESS   # send one email now and explain any SMTP failure
     python -m app.cli rules-selftest            # run the YARA rules over official WordPress releases now
     python -m app.cli anonymise-user EMAIL REASON...  # erasure request (NDPA): de-identify a user account
+    python -m app.cli availability-report HOST [DAYS]  # why a website's availability checks fail (by hour/cause)
     python -m app.cli ensure-app-role           # create/repair the restricted runtime database login
                                                 # (CW_APP_DB_USER / CW_APP_DB_PASSWORD; run as the owner)
 """
@@ -349,6 +350,45 @@ def cmd_health() -> None:
         sys.exit(1)
 
 
+def cmd_availability_report(host: str, days: int = 3) -> None:
+    """Failed availability checks for one website, grouped by cause, plus a live check now."""
+    from datetime import timedelta
+
+    from sqlalchemy import func
+
+    from app.models import AvailabilityCheck, Website
+    from app.monitoring.availability import check_availability
+
+    host = host.lower().removeprefix("https://").removeprefix("http://").strip("/")
+    with platform_session() as db:
+        sites = db.execute(select(Website).where(Website.hostname.ilike(f"%{host}%"))).scalars().all()
+        if not sites:
+            sys.exit(f"No website matches {host!r}.")
+        since = utcnow() - timedelta(days=days)
+        for w in sites:
+            rows = db.execute(select(AvailabilityCheck.outcome, AvailabilityCheck.error_class,
+                                     AvailabilityCheck.http_status, func.count(), func.min(AvailabilityCheck.checked_at),
+                                     func.max(AvailabilityCheck.checked_at), func.max(AvailabilityCheck.error_message))
+                              .where(AvailabilityCheck.website_id == w.id, AvailabilityCheck.checked_at >= since)
+                              .group_by(AvailabilityCheck.outcome, AvailabilityCheck.error_class, AvailabilityCheck.http_status)
+                              .order_by(func.count().desc())).all()
+            total = sum(r[3] for r in rows)
+            print(f"\n== {w.name} ({w.url}) - last {days} day(s): {total} checks")
+            for outcome, cls, code, n, first, last, msg in rows:
+                print(f"  {n:5d}  {outcome:9s} {cls or '-':22s} HTTP {code or '-':<4} "
+                      f"{first:%d %b %H:%M} .. {last:%d %b %H:%M}  {(msg or '')[:110]}")
+            hour = func.extract("hour", AvailabilityCheck.checked_at)
+            hours = db.execute(select(hour, func.count())
+                               .where(AvailabilityCheck.website_id == w.id, AvailabilityCheck.checked_at >= since,
+                                      AvailabilityCheck.outcome.in_(["down", "error"]))
+                               .group_by(hour).order_by(hour)).all()
+            if hours:
+                print("  Failures by hour (UTC): " + ", ".join(f"{int(h):02d}h:{n}" for h, n in hours))
+            res = check_availability(w.url, retry_after=0)
+            print(f"  Live check now: {res.outcome} HTTP {res.http_status or '-'} {res.response_ms or '-'} ms "
+                  f"{res.error_class or ''} {res.error_message or ''}")
+
+
 def main(argv: list[str]) -> None:
     if not argv:
         print(__doc__)
@@ -372,6 +412,8 @@ def main(argv: list[str]) -> None:
         cmd_health()
     elif cmd == "send-test-email" and len(args) == 1:
         cmd_send_test_email(args[0])
+    elif cmd == "availability-report" and args:
+        cmd_availability_report(args[0], int(args[1]) if len(args) > 1 else 3)
     elif cmd == "ensure-app-role":
         cmd_ensure_app_role()
     elif cmd == "anonymise-user" and len(args) >= 2:
