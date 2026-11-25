@@ -66,6 +66,7 @@ class P:
     OPS_INCIDENTS_READ = "ops:incidents:read"
     OPS_INCIDENTS_MANAGE = "ops:incidents:manage"
     OPS_DIAGNOSTICS = "ops:diagnostics"
+    OPS_SERVICE_DESK = "ops:service_desk"  # work service requests (ticket content only; site data needs a grant)
     GRANTS_REQUEST = "grants:request"
     GRANTS_ISSUE = "grants:issue"
 
@@ -205,6 +206,7 @@ PLATFORM_ROLES: list[RoleDef] = [
                 P.OPS_JOBS_READ,
                 P.OPS_JOBS_MANAGE,
                 P.OPS_INCIDENTS_READ,
+                P.OPS_SERVICE_DESK,
                 P.GRANTS_ISSUE,
             }
         ),
@@ -223,6 +225,7 @@ PLATFORM_ROLES: list[RoleDef] = [
                 P.OPS_INCIDENTS_READ,
                 P.OPS_INCIDENTS_MANAGE,
                 P.OPS_DIAGNOSTICS,
+                P.OPS_SERVICE_DESK,
                 P.GRANTS_REQUEST,
             }
         ),
@@ -252,6 +255,7 @@ PLATFORM_ROLES: list[RoleDef] = [
                 P.OPS_JOBS_READ,
                 P.OPS_INCIDENTS_READ,
                 P.OPS_DIAGNOSTICS,
+                P.OPS_SERVICE_DESK,
                 P.GRANTS_REQUEST,
             }
         ),
@@ -260,8 +264,8 @@ PLATFORM_ROLES: list[RoleDef] = [
         "support_agent",
         "Support Agent",
         "platform",
-        "Handles support tickets. No customer monitoring data without a grant.",
-        frozenset({P.PLATFORM_TENANTS_READ, P.GRANTS_REQUEST}),
+        "Works the service desk (support and service requests). No customer monitoring data without a grant.",
+        frozenset({P.PLATFORM_TENANTS_READ, P.OPS_SERVICE_DESK, P.GRANTS_REQUEST}),
     ),
     RoleDef(
         "billing_admin",

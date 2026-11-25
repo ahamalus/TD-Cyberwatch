@@ -137,6 +137,36 @@ Each site is **Down** (failing availability checks), **Incident** (open critical
 incident counts. Hosting connections are listed underneath, failing ones first. Demo organisations are hidden
 unless *Include demo data* is selected.
 
+## Service desk (cleanup and other services)
+
+Customers order services under **Support & services**: malware cleanup, fixing a broken site (white screen,
+errors, forms, checkout), migration, maintenance tasks and speed optimisation, or ask a question. From an open
+incident, **Ask Trust Data to fix this** pre-fills a request. Staff work them in **Operations → Service Desk**
+(roles: platform administrator, SOC analyst, managed-service operator, support agent).
+
+| Plan support level | First reply (normal priority) | Finish | Service requests included / month |
+|---|---|---|---|
+| standard | 24 h | 5 days | 0 (priced per request) |
+| priority | 8 h | 3 days | 2 |
+| dedicated | 4 h | 2 days | 5 |
+| managed | 2 h | 1 day | unlimited |
+
+Urgent requests get a quarter of these times, high half, low double. A plan can override them with the
+entitlements `sla_response_hours`, `sla_resolution_hours` and `service_tasks_per_month` (Administration → Plans).
+Requests beyond the allowance are marked **Quote**: agree the price with the customer before starting, then set
+it under *Billing* on the request.
+
+**Working a request:** assign it (or *Assign to me*), reply to the customer (the first reply stops the response
+clock), use **internal notes** for anything the customer should not see, tick the checklist, log time, and write
+the **report** (what you found, what you did, how you checked, recommendations). A service request cannot be
+resolved without the report. The customer then confirms and closes it.
+
+**Access rules:** staff with the service-desk role read requests themselves, but **never change a site or look at
+its monitoring data until the customer authorises the work** on the request page. Authorisation plus an assigned
+engineer automatically creates a 14-day access grant for that engineer (recorded in the audit trail with the
+customer's authorisation as its basis); it is revoked when the request is closed or cancelled, or when the
+engineer is unassigned. Set `CW_SUPPORT_EMAILS` to a shared inbox to be told about new requests as well.
+
 ## Investigating a website that keeps failing availability checks
 ```
 sudo -u cyberwatch docker compose exec api python -m app.cli availability-report example.com 3

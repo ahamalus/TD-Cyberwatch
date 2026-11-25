@@ -439,7 +439,7 @@ export function NocWallPage() {
           {d.platform.alerts.map((a: any) => <Text size="sm" key={a.message}>[{a.severity}] {a.message}</Text>)}
         </Alert>
       )}
-      <SimpleGrid cols={{ base: 2, sm: 4, xl: 8 }} mb="md">
+      <SimpleGrid cols={{ base: 2, sm: 3, md: 5, xl: 9 }} mb="md">
         <StatCard label="Down" tone={sum.down ? "threat" : "secure"} loading={!d} value={sum.down} />
         <StatCard label="Incident" tone={sum.alert ? "threat" : "secure"} loading={!d} value={sum.alert} />
         <StatCard label="Degraded" tone={sum.degraded ? "amber" : "secure"} loading={!d} value={sum.degraded} />
@@ -447,6 +447,8 @@ export function NocWallPage() {
         <StatCard label="No data / paused" tone="info" loading={!d} value={d ? (sum.unknown ?? 0) + (sum.paused ?? 0) : undefined} />
         <StatCard label="Critical + high open" tone={(inc.critical ?? 0) + (inc.high ?? 0) ? "threat" : "secure"} loading={!d} value={d ? (inc.critical ?? 0) + (inc.high ?? 0) : undefined} to="/ops/incidents" />
         <StatCard label="Failing connections" icon={IconPlugConnectedX} tone={d?.connections_summary.failing ? "amber" : "secure"} loading={!d} value={d ? `${d.connections_summary.failing}/${d.connections_summary.total}` : undefined} />
+        <StatCard label="Service desk overdue" tone={d?.service_desk.overdue ? "threat" : "secure"} loading={!d} value={d?.service_desk.overdue}
+          context={d ? `${d.service_desk.open} open` : undefined} to="/ops/service-desk" />
         <StatCard label="Workers" icon={IconCpu} tone={d && d.platform.workers_healthy && !d.platform.workers_failed && d.platform.scheduler_ok ? "secure" : "threat"} loading={!d}
           value={d ? `${d.platform.workers_healthy} ok` : undefined} context={d && !d.platform.scheduler_ok ? "Scheduler stale" : undefined} to="/ops/workers" />
       </SimpleGrid>
@@ -480,3 +482,5 @@ export function NocWallPage() {
     </>
   );
 }
+
+export { DeskTicketPage, ServiceDeskPage } from "./ServiceDesk";

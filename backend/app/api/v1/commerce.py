@@ -18,7 +18,7 @@ from app.db.base import utcnow
 from app.db.session import get_db
 from app.models import Payment, Plan, Report, SupportTicket, TicketMessage, User, Website
 from app.schemas.common import PageParams, paginate
-from app.services import audit, billing, entitlements, reports, storage
+from app.services import audit, billing, entitlements, reports, service_desk, storage
 
 router = APIRouter(prefix="/tenants/{tenant_id}", tags=["billing", "reports", "support"])
 public_router = APIRouter(tags=["billing"])
@@ -207,16 +207,19 @@ def download_report(report_id: uuid.UUID, ctx: TenantContext = Depends(require(P
         "Content-Disposition": f'attachment; filename="{fname}"', "X-Content-SHA256": r.content_sha256 or ""})
 
 
-# ---------------------------------------------------------------- support
+# ---------------------------------------------------------------- support and service desk
+
+_CATEGORY_PATTERN = "^(" + "|".join(service_desk.ALL_CATEGORIES) + ")$"
 
 
 class TicketIn(BaseModel):
     subject: str = Field(min_length=3, max_length=200)
-    category: str = Field(pattern="^(general|investigation|remediation_request|billing|technical)$")
+    category: str = Field(pattern=_CATEGORY_PATTERN)
     priority: str = Field(default="normal", pattern="^(low|normal|high|urgent)$")
     body: str = Field(min_length=1, max_length=20000)
     website_id: uuid.UUID | None = None
     incident_id: uuid.UUID | None = None
+    incident_ids: list[uuid.UUID] = Field(default_factory=list, max_length=50)
 
 
 class TicketMessageIn(BaseModel):
@@ -228,21 +231,40 @@ class RemediationApprovalIn(BaseModel):
     confirm: bool
 
 
-def ticket_dict(db: Session, t: SupportTicket, with_messages: bool = False) -> dict:
+def ticket_dict(db: Session, t: SupportTicket, with_messages: bool = False, internal: bool = False) -> dict:
+    """Ticket as the customer sees it (``internal`` adds staff-only notes, for the service desk)."""
     d = {"id": str(t.id), "reference": t.reference, "subject": t.subject, "category": t.category,
          "priority": t.priority, "status": t.status, "website_id": str(t.website_id) if t.website_id else None,
-         "incident_id": str(t.incident_id) if t.incident_id else None, "created_at": t.created_at,
-         "updated_at": t.updated_at, "remediation_approved_at": t.remediation_approved_at,
-         "remediation_scope": t.remediation_scope}
+         "incident_id": str(t.incident_id) if t.incident_id else None,
+         "incident_ids": [str(x) for x in (t.incident_ids or [])],
+         "created_at": t.created_at, "updated_at": t.updated_at, "remediation_approved_at": t.remediation_approved_at,
+         "remediation_scope": t.remediation_scope, "is_service_request": t.category in service_desk.SERVICE_CATEGORIES,
+         "sla": {"response_due": t.sla_response_due, "resolution_due": t.sla_resolution_due,
+                 "first_response_at": t.first_response_at, "resolved_at": t.resolved_at,
+                 **service_desk.sla_state(t)},
+         "checklist": [{"key": c["key"], "label": c["label"], "done": c["done"], "done_at": c.get("done_at")}
+                       for c in (t.checklist or [])],
+         "time_spent_minutes": t.time_spent_minutes, "report": t.report or {},
+         "billing_status": t.billing_status, "price_minor": t.price_minor,
+         "access_granted": bool(t.grant_id)}
     if t.assigned_to:
         u = db.get(User, t.assigned_to)
         d["assigned_team_member"] = u.full_name if u else None
     if with_messages:
-        msgs = db.execute(select(TicketMessage, User).join(User, User.id == TicketMessage.author_user_id)
-                          .where(TicketMessage.ticket_id == t.id).order_by(TicketMessage.created_at)).all()
+        q = (select(TicketMessage, User).join(User, User.id == TicketMessage.author_user_id)
+             .where(TicketMessage.ticket_id == t.id).order_by(TicketMessage.created_at))
+        if not internal:
+            q = q.where(TicketMessage.internal.is_(False))
         d["messages"] = [{"body": m.body, "author": u.full_name or u.email, "is_staff": m.author_is_staff,
-                          "created_at": m.created_at} for m, u in msgs]
+                          "internal": m.internal, "kind": m.kind, "created_at": m.created_at}
+                         for m, u in db.execute(q).all()]
     return d
+
+
+@router.get("/service-desk")
+def service_desk_summary(ctx: TenantContext = Depends(require(P.SUPPORT_READ)), db: Session = Depends(get_db)) -> dict:
+    """What the plan includes: SLA targets, monthly service requests used and remaining, service types."""
+    return service_desk.summary(db, ctx.tenant_id)
 
 
 @router.get("/tickets")
@@ -254,21 +276,39 @@ def list_tickets(ctx: TenantContext = Depends(require(P.SUPPORT_READ)), db: Sess
     return paginate(db, q.order_by(SupportTicket.updated_at.desc()), params, lambda t: ticket_dict(db, t))
 
 
+def _owned(db: Session, tenant_id: uuid.UUID, website_id: uuid.UUID | None, incident_ids: list[uuid.UUID]) -> None:
+    from app.models import Incident
+
+    if website_id and db.execute(select(Website.id).where(Website.id == website_id, Website.tenant_id == tenant_id)).first() is None:
+        raise ValidationFailed("Unknown website.")
+    if incident_ids:
+        found = set(db.execute(select(Incident.id).where(Incident.id.in_(incident_ids), Incident.tenant_id == tenant_id)).scalars())
+        if found != set(incident_ids):
+            raise ValidationFailed("Unknown incident.")
+
+
 @router.post("/tickets", status_code=201)
 def create_ticket(body: TicketIn, ctx: TenantContext = Depends(require(P.SUPPORT_MANAGE)), db: Session = Depends(get_db)) -> dict:
     from sqlalchemy import text
 
+    incident_ids = list(dict.fromkeys(body.incident_ids + ([body.incident_id] if body.incident_id else [])))
+    _owned(db, ctx.tenant_id, body.website_id, incident_ids)
     db.execute(text("SELECT pg_advisory_xact_lock(hashtext(:k))"), {"k": f"ticketref:{ctx.tenant_id}"})
     n = db.execute(select(func.count()).select_from(SupportTicket).where(SupportTicket.tenant_id == ctx.tenant_id)).scalar_one()
     t = SupportTicket(tenant_id=ctx.tenant_id, reference=f"SUP-{n + 1:05d}", subject=body.subject,
                       category=body.category, priority=body.priority, website_id=body.website_id,
-                      incident_id=body.incident_id, created_by=ctx.user.id)
+                      incident_id=incident_ids[0] if incident_ids else None,
+                      incident_ids=[str(i) for i in incident_ids], created_by=ctx.user.id, status="open")
+    service_desk.on_create(db, t)
     db.add(t)
     db.flush()
-    db.add(TicketMessage(tenant_id=ctx.tenant_id, ticket_id=t.id, author_user_id=ctx.user.id,
-                         author_is_staff=ctx.grant is not None, body=body.body))
+    service_desk.add_message(db, t, ctx.user.id, body.body, staff=ctx.grant is not None)
     audit.record(db, "support.ticket_created", actor=ctx.actor(), tenant_id=ctx.tenant_id, target_type="ticket",
-                 target_id=t.id, details={"category": body.category, "priority": body.priority})
+                 target_id=t.id, details={"category": body.category, "priority": body.priority,
+                                          "billing_status": t.billing_status, "incidents": len(incident_ids)})
+    service_desk.notify(db, t, to_customer=False, key="created",
+                        subject=f"New {body.priority} {body.category.replace('_', ' ')} request: {body.subject}",
+                        body=f"{ctx.user.full_name or ctx.user.email} opened a request.\n\n{body.body[:2000]}")
     db.commit()
     return ticket_dict(db, t, with_messages=True)
 
@@ -290,12 +330,29 @@ def get_ticket(ticket_id: uuid.UUID, ctx: TenantContext = Depends(require(P.SUPP
 def reply(ticket_id: uuid.UUID, body: TicketMessageIn, ctx: TenantContext = Depends(require(P.SUPPORT_MANAGE)),
           db: Session = Depends(get_db)) -> dict:
     t = _ticket(db, ctx, ticket_id)
-    db.add(TicketMessage(tenant_id=ctx.tenant_id, ticket_id=t.id, author_user_id=ctx.user.id,
-                         author_is_staff=ctx.grant is not None, body=body.body))
-    if t.status in ("resolved", "closed", "awaiting_customer") and ctx.grant is None:
-        t.status = "open"
-    t.updated_at = utcnow()
+    if t.status == "cancelled":
+        raise ValidationFailed("This request was cancelled; open a new one.")
+    staff = ctx.grant is not None
+    service_desk.add_message(db, t, ctx.user.id, body.body, staff=staff)
+    if not staff and t.status in ("resolved", "closed", "awaiting_customer"):
+        service_desk.set_status(db, t, "open", ctx.user.id)
     audit.record(db, "support.ticket_replied", actor=ctx.actor(), tenant_id=ctx.tenant_id, target_type="ticket", target_id=t.id)
+    service_desk.notify(db, t, to_customer=staff, key=f"msg:{utcnow().timestamp():.0f}",
+                        subject=f"New reply: {t.subject}", body=body.body[:2000])
+    db.commit()
+    return ticket_dict(db, t, with_messages=True)
+
+
+@router.post("/tickets/{ticket_id}/close")
+def close_ticket(ticket_id: uuid.UUID, ctx: TenantContext = Depends(require(P.SUPPORT_MANAGE)),
+                 db: Session = Depends(get_db)) -> dict:
+    """The customer confirms the work is done (or withdraws an open request). Ends any staff access it opened."""
+    t = _ticket(db, ctx, ticket_id)
+    if t.status in ("closed", "cancelled"):
+        return ticket_dict(db, t, with_messages=True)
+    new = "closed" if t.status == "resolved" or t.first_response_at else "cancelled"
+    service_desk.set_status(db, t, new, ctx.user.id)
+    audit.record(db, f"support.ticket_{new}", actor=ctx.actor(), tenant_id=ctx.tenant_id, target_type="ticket", target_id=t.id)
     db.commit()
     return ticket_dict(db, t, with_messages=True)
 
@@ -304,15 +361,22 @@ def reply(ticket_id: uuid.UUID, body: TicketMessageIn, ctx: TenantContext = Depe
 def approve_remediation(ticket_id: uuid.UUID, body: RemediationApprovalIn,
                         ctx: TenantContext = Depends(require(P.MANAGED_SERVICE_APPROVE)),
                         db: Session = Depends(get_db)) -> dict:
+    """The customer authorises Trust Data to work on the site within ``scope``. The assigned engineer then gets
+    time-limited access (a managed-service grant), revoked when the request is closed."""
     if not body.confirm:
         raise ValidationFailed("Explicit confirmation is required.")
     if ctx.grant is not None:
         raise ValidationFailed("Remediation must be approved by the customer, not by service staff.")
     t = _ticket(db, ctx, ticket_id)
+    if t.status in ("closed", "cancelled"):
+        raise ValidationFailed("This request is closed.")
     t.remediation_approved_by, t.remediation_approved_at, t.remediation_scope = ctx.user.id, utcnow(), body.scope
-    db.add(TicketMessage(tenant_id=ctx.tenant_id, ticket_id=t.id, author_user_id=ctx.user.id,
-                         body=f"Customer approved remediation within this scope:\n{body.scope}"))
+    service_desk.add_message(db, t, ctx.user.id, f"Customer authorised the work within this scope:\n{body.scope}",
+                             staff=False, kind="authorisation")
     audit.record(db, "support.remediation_approved", actor=ctx.actor(), tenant_id=ctx.tenant_id,
                  target_type="ticket", target_id=t.id, details={"scope": body.scope})
+    service_desk.ensure_grant(db, t, ctx.actor())
+    service_desk.notify(db, t, to_customer=False, key="authorised", subject=f"Work authorised: {t.subject}",
+                        body=f"The customer authorised the work within this scope:\n{body.scope}")
     db.commit()
     return ticket_dict(db, t, with_messages=True)

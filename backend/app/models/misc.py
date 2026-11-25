@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Identity, Index, String, Text
+from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Identity, Index, Integer, String, Text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -33,6 +33,18 @@ class SupportTicket(UUIDPk, Timestamps, Base):
     remediation_approved_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
     remediation_approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     remediation_scope: Mapped[str | None] = mapped_column(Text)
+    # Service desk (see services/service_desk.py)
+    incident_ids: Mapped[list] = mapped_column(JSONB, default=list, server_default="[]", nullable=False)
+    sla_response_due: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    sla_resolution_due: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    first_response_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    checklist: Mapped[list] = mapped_column(JSONB, default=list, server_default="[]", nullable=False)
+    time_spent_minutes: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    report: Mapped[dict] = mapped_column(JSONB, default=dict, server_default="{}", nullable=False)
+    billing_status: Mapped[str] = mapped_column(String(16), default="included", server_default="included", nullable=False)
+    price_minor: Mapped[int | None] = mapped_column(BigInteger)
+    grant_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
 
 
 class TicketMessage(UUIDPk, Base):
@@ -45,6 +57,8 @@ class TicketMessage(UUIDPk, Base):
     author_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
     author_is_staff: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     body: Mapped[str] = mapped_column(Text, nullable=False)
+    internal: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", nullable=False)  # staff only
+    kind: Mapped[str] = mapped_column(String(16), default="message", server_default="message", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
 
 

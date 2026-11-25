@@ -200,6 +200,12 @@ export function IncidentDetailPage() {
       <PageHeader
         title={i.title}
         crumbs={[{ label: "Incidents", to: `/app/${tid}/incidents` }, { label: i.reference }]}
+        actions={can("support:manage") && ["new", "acknowledged", "investigating", "contained"].includes(i.status) && (
+          <Button component={Link} variant="light"
+            to={`/app/${tid}/support?new=${["malware", "suspicious_file", "suspected_compromise", "file_integrity", "log_activity"].includes(i.category) ? "malware_cleanup" : "fix_site"}&incident=${i.id}${i.website_id ? `&website=${i.website_id}` : ""}&subject=${encodeURIComponent(`Help with ${i.reference}: ${i.title}`.slice(0, 190))}`}>
+            Ask Trust Data to fix this
+          </Button>
+        )}
         description={
           <Group gap="xs" component="span">
             <SeverityBadge severity={i.severity} size="md" />

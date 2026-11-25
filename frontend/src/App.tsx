@@ -113,7 +113,7 @@ function CustomerLayout() {
       label: "Account",
       items: [
         { label: "Billing", to: `${base}/billing`, icon: IconCreditCard, visible: can("billing:read") },
-        { label: "Support", to: `${base}/support`, icon: IconLifebuoy, visible: can("support:read") },
+        { label: "Support & services", to: `${base}/support`, icon: IconLifebuoy, visible: can("support:read") },
         { label: "Settings", to: `${base}/settings`, icon: IconSettings },
       ],
     },
@@ -197,6 +197,7 @@ export function opsNavGroups(can: (perm: string) => boolean): NavGroup[] {
       items: [
         { label: "Security Overview", to: "/ops/overview", icon: IconLayoutDashboard, visible: can("ops:jobs:read") },
         { label: "NOC Wall", to: "/ops/noc", icon: IconDeviceDesktopAnalytics, visible: can("ops:jobs:read") },
+        { label: "Service Desk", to: "/ops/service-desk", icon: IconLifebuoy, visible: can("ops:service_desk") },
         { label: "Scan Queue", to: "/ops/jobs", icon: IconActivity, visible: can("ops:jobs:read") },
         { label: "Hosting Diagnostics", to: "/ops/diagnostics", icon: IconServer, visible: can("ops:diagnostics") },
         { label: "File Integrity", to: "/ops/files", icon: IconFingerprint },
@@ -331,6 +332,8 @@ export function App() {
         <Route index element={<Navigate to="overview" replace />} />
         <Route path="overview" element={<Ops.OpsOverviewPage />} />
         <Route path="noc" element={<Ops.NocWallPage />} />
+        <Route path="service-desk" element={<Ops.ServiceDeskPage />} />
+        <Route path="service-desk/:ticketId" element={<Ops.DeskTicketPage />} />
         <Route path="jobs" element={<Ops.ScanQueuePage />} />
         <Route path="diagnostics" element={<Ops.DiagnosticsPage />} />
         <Route path="files" element={<Ops.CapabilityNoticePage kind="files" />} />

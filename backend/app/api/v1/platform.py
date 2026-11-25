@@ -1067,13 +1067,290 @@ def ops_noc(pc: PlatformContext = Depends(require_platform(P.OPS_JOBS_READ)),
         key=lambda c: (c["status"] not in _BAD_CONNECTION, c["status"] != "untested", c["tenant"].lower(), c["name"]))
     summary = {s: sum(1 for r in rows if r["state"] == s) for s in _RANK}
     health = system_health(db)
+    from app.models import SupportTicket
+    from app.services.service_desk import OPEN_TICKET_STATUSES
+
+    open_q = select(func.count()).select_from(SupportTicket).where(SupportTicket.status.in_(OPEN_TICKET_STATUSES))
+    desk = {"open": db.execute(open_q).scalar_one(),
+            "overdue": db.execute(open_q.where(or_(
+                SupportTicket.sla_resolution_due < now,
+                SupportTicket.first_response_at.is_(None) & (SupportTicket.sla_response_due < now)))).scalar_one()}
     return {
         "generated_at": now, "summary": summary, "websites": rows, "connections": connections,
         "connections_summary": {"total": len(connections),
                                 "failing": sum(1 for c in connections if c["status"] in _BAD_CONNECTION),
                                 "untested": sum(1 for c in connections if c["status"] == "untested")},
         "open_incidents": {s: sum(r["open_incidents"][s] for r in rows) for s in SEVERITIES},
+        "service_desk": desk,
         "platform": {"workers_healthy": sum(1 for wk in health["workers"] if wk.get("state") == "healthy"),
                      "workers_failed": sum(1 for wk in health["workers"] if wk.get("state") == "failed"),
                      "scheduler_ok": health["scheduler"]["ok"], "alerts": health["alerts"]},
     }
+
+
+# ---------------------------------------------------------------- service desk (staff)
+
+_TICKET_STATUSES = ("open", "in_progress", "awaiting_customer", "resolved", "closed", "cancelled")
+
+
+def _desk_ticket(db: Session, ticket_id: uuid.UUID):
+    from app.models import SupportTicket
+
+    t = db.get(SupportTicket, ticket_id)
+    if t is None:
+        raise NotFound("Request not found.")
+    return t
+
+
+def _desk_row(db: Session, t, names: dict) -> dict:
+    from app.services import service_desk
+
+    assignee = db.get(User, t.assigned_to) if t.assigned_to else None
+    return {"id": str(t.id), "tenant_id": str(t.tenant_id), "tenant": names.get(t.tenant_id), "reference": t.reference,
+            "subject": t.subject, "category": t.category, "priority": t.priority, "status": t.status,
+            "is_service_request": t.category in service_desk.SERVICE_CATEGORIES,
+            "assigned_to": str(t.assigned_to) if t.assigned_to else None,
+            "assignee": (assignee.full_name or assignee.email) if assignee else None,
+            "authorised": t.remediation_approved_at is not None, "billing_status": t.billing_status,
+            "sla": {"response_due": t.sla_response_due, "resolution_due": t.sla_resolution_due,
+                    **service_desk.sla_state(t)},
+            "checklist_done": sum(1 for c in (t.checklist or []) if c.get("done")),
+            "checklist_total": len(t.checklist or []),
+            "created_at": t.created_at, "updated_at": t.updated_at}
+
+
+@ops.get("/service-desk")
+def desk_queue(pc: PlatformContext = Depends(require_platform(P.OPS_SERVICE_DESK)), params: PageParams = Depends(),
+               view: str = Query("open", pattern="^(open|mine|unassigned|overdue|resolved|all)$")) -> dict:
+    """Every organisation's support and service requests, most urgent first."""
+    from sqlalchemy import case
+
+    from app.models import SupportTicket
+    from app.services.service_desk import OPEN_TICKET_STATUSES
+
+    db, now = pc.db, utcnow()
+    q = select(SupportTicket)
+    if view in ("open", "mine", "unassigned", "overdue"):
+        q = q.where(SupportTicket.status.in_(OPEN_TICKET_STATUSES))
+    if view == "mine":
+        q = q.where(SupportTicket.assigned_to == pc.principal.user.id)
+    elif view == "unassigned":
+        q = q.where(SupportTicket.assigned_to.is_(None))
+    elif view == "overdue":
+        q = q.where(or_(SupportTicket.sla_resolution_due < now,
+                        (SupportTicket.first_response_at.is_(None)) & (SupportTicket.sla_response_due < now)))
+    elif view == "resolved":
+        q = q.where(SupportTicket.status.in_(["resolved", "closed", "cancelled"]))
+    prio = case({"urgent": 0, "high": 1, "normal": 2, "low": 3}, value=SupportTicket.priority, else_=4)
+    q = q.order_by(SupportTicket.sla_resolution_due.asc().nulls_last(), prio, SupportTicket.created_at)
+    names = dict(db.execute(select(Tenant.id, Tenant.name)).all())
+    page = paginate(db, q, params, lambda t: _desk_row(db, t, names))
+    counts = {
+        "open": db.execute(select(func.count()).select_from(SupportTicket).where(SupportTicket.status.in_(OPEN_TICKET_STATUSES))).scalar_one(),
+        "unassigned": db.execute(select(func.count()).select_from(SupportTicket).where(
+            SupportTicket.status.in_(OPEN_TICKET_STATUSES), SupportTicket.assigned_to.is_(None))).scalar_one(),
+        "overdue": db.execute(select(func.count()).select_from(SupportTicket).where(
+            SupportTicket.status.in_(OPEN_TICKET_STATUSES),
+            or_(SupportTicket.sla_resolution_due < now,
+                (SupportTicket.first_response_at.is_(None)) & (SupportTicket.sla_response_due < now)))).scalar_one(),
+        "mine": db.execute(select(func.count()).select_from(SupportTicket).where(
+            SupportTicket.status.in_(OPEN_TICKET_STATUSES), SupportTicket.assigned_to == pc.principal.user.id)).scalar_one(),
+    }
+    return page | {"counts": counts}
+
+
+@ops.get("/service-desk/{ticket_id}")
+def desk_ticket(ticket_id: uuid.UUID, pc: PlatformContext = Depends(require_platform(P.OPS_SERVICE_DESK))) -> dict:
+    from app.api.v1.commerce import ticket_dict
+
+    db = pc.db
+    t = _desk_ticket(db, ticket_id)
+    names = dict(db.execute(select(Tenant.id, Tenant.name).where(Tenant.id == t.tenant_id)).all())
+    d = ticket_dict(db, t, with_messages=True, internal=True) | _desk_row(db, t, names)
+    w = db.get(Website, t.website_id) if t.website_id else None
+    d["website"] = {"id": str(w.id), "name": w.name, "url": w.url} if w else None
+    # Incident metadata only; details, evidence and files are seen in the customer portal through the grant.
+    ids = [uuid.UUID(x) for x in (t.incident_ids or [])]
+    d["incidents"] = [{"id": str(i.id), "reference": i.reference, "severity": i.severity, "category": i.category,
+                       "status": i.status} for i in db.execute(select(Incident).where(Incident.id.in_(ids))).scalars()] if ids else []
+    g = db.get(ManagedServiceGrant, t.grant_id) if t.grant_id else None
+    d["grant"] = {"id": str(g.id), "status": g.status, "expires_at": g.expires_at,
+                  "grantee_user_id": str(g.grantee_user_id),
+                  "portal_url": f"/app/{t.tenant_id}/support/{t.id}"} if g else None
+    d["checklist"] = t.checklist or []
+    creator = db.get(User, t.created_by)
+    d["requested_by"] = {"name": creator.full_name, "email": creator.email} if creator else None
+    return d
+
+
+class DeskAssignIn(BaseModel):
+    user_id: uuid.UUID | None = None  # omitted: assign to me
+    unassign: bool = False
+
+
+@ops.post("/service-desk/{ticket_id}/assign")
+def desk_assign(ticket_id: uuid.UUID, body: DeskAssignIn,
+                pc: PlatformContext = Depends(require_platform(P.OPS_SERVICE_DESK))) -> dict:
+    from app.services import service_desk
+
+    db = pc.db
+    t = _desk_ticket(db, ticket_id)
+    if body.unassign:
+        t.assigned_to = None
+        service_desk.revoke_grant(db, t, pc.principal.user.id, "unassigned")
+    else:
+        uid = body.user_id or pc.principal.user.id
+        u = db.get(User, uid)
+        if u is None or not u.is_platform_staff or not u.is_active:
+            raise ValidationFailed("Assign to an active staff member.")
+        t.assigned_to = uid
+        if t.status == "open":
+            t.status = "in_progress"
+        service_desk.ensure_grant(db, t, pc.actor())
+        service_desk.add_message(db, t, pc.principal.user.id, f"Assigned to {u.full_name or u.email}.", staff=True,
+                                 kind="status")
+        service_desk.notify(db, t, to_customer=True, key=f"assigned:{uid}", subject=f"Engineer assigned: {t.subject}",
+                            body=f"{u.full_name or 'A Trust Data engineer'} is now working on your request.")
+    audit.record(db, "service_desk.assigned", actor=pc.actor(), tenant_id=t.tenant_id, target_type="ticket",
+                 target_id=t.id, details={"assigned_to": str(t.assigned_to) if t.assigned_to else None})
+    db.commit()
+    return desk_ticket(ticket_id, pc)
+
+
+class DeskStatusIn(BaseModel):
+    status: str = Field(pattern="^(open|in_progress|awaiting_customer|resolved|closed|cancelled)$")
+
+
+@ops.post("/service-desk/{ticket_id}/status")
+def desk_status(ticket_id: uuid.UUID, body: DeskStatusIn,
+                pc: PlatformContext = Depends(require_platform(P.OPS_SERVICE_DESK))) -> dict:
+    from app.services import service_desk
+
+    db = pc.db
+    t = _desk_ticket(db, ticket_id)
+    if body.status == "resolved" and t.category in service_desk.SERVICE_CATEGORIES and not (t.report or {}).get("actions_taken"):
+        raise ValidationFailed("Write the report (at least what was done) before resolving a service request.")
+    old = t.status
+    service_desk.set_status(db, t, body.status, pc.principal.user.id)
+    audit.record(db, "service_desk.status_changed", actor=pc.actor(), tenant_id=t.tenant_id, target_type="ticket",
+                 target_id=t.id, details={"from": old, "to": body.status})
+    if body.status in ("awaiting_customer", "resolved"):
+        service_desk.notify(db, t, to_customer=True, key=f"status:{body.status}:{utcnow().timestamp():.0f}",
+                            subject=("Your input is needed: " if body.status == "awaiting_customer" else "Resolved: ") + t.subject,
+                            body=("We need information from you to continue." if body.status == "awaiting_customer" else
+                                  "We have completed the work. The report is on the request page. Close the request to "
+                                  "confirm, or reply if anything is still wrong."))
+    db.commit()
+    return desk_ticket(ticket_id, pc)
+
+
+class DeskMessageIn(BaseModel):
+    body: str = Field(min_length=1, max_length=20000)
+    internal: bool = False
+
+
+@ops.post("/service-desk/{ticket_id}/messages")
+def desk_message(ticket_id: uuid.UUID, body: DeskMessageIn,
+                 pc: PlatformContext = Depends(require_platform(P.OPS_SERVICE_DESK))) -> dict:
+    from app.services import service_desk
+
+    db = pc.db
+    t = _desk_ticket(db, ticket_id)
+    service_desk.add_message(db, t, pc.principal.user.id, body.body, staff=True, internal=body.internal)
+    if not body.internal:
+        service_desk.notify(db, t, to_customer=True, key=f"reply:{utcnow().timestamp():.0f}",
+                            subject=f"New reply: {t.subject}", body=body.body[:2000])
+    audit.record(db, "service_desk.note_added" if body.internal else "service_desk.replied", actor=pc.actor(),
+                 tenant_id=t.tenant_id, target_type="ticket", target_id=t.id)
+    db.commit()
+    return desk_ticket(ticket_id, pc)
+
+
+class DeskChecklistIn(BaseModel):
+    key: str = Field(max_length=16)
+    done: bool
+
+
+@ops.post("/service-desk/{ticket_id}/checklist")
+def desk_checklist(ticket_id: uuid.UUID, body: DeskChecklistIn,
+                   pc: PlatformContext = Depends(require_platform(P.OPS_SERVICE_DESK))) -> dict:
+    import copy
+
+    db = pc.db
+    t = _desk_ticket(db, ticket_id)
+    items = copy.deepcopy(t.checklist or [])
+    item = next((c for c in items if c["key"] == body.key), None)
+    if item is None:
+        raise NotFound("Checklist item not found.")
+    item["done"], item["done_at"] = body.done, utcnow().isoformat() if body.done else None
+    item["done_by"] = str(pc.principal.user.id) if body.done else None
+    t.checklist, t.updated_at = items, utcnow()
+    db.commit()
+    return desk_ticket(ticket_id, pc)
+
+
+class DeskTimeIn(BaseModel):
+    minutes: int = Field(ge=1, le=24 * 60)
+    note: str = Field(default="", max_length=500)
+
+
+@ops.post("/service-desk/{ticket_id}/time")
+def desk_time(ticket_id: uuid.UUID, body: DeskTimeIn,
+              pc: PlatformContext = Depends(require_platform(P.OPS_SERVICE_DESK))) -> dict:
+    from app.services import service_desk
+
+    db = pc.db
+    t = _desk_ticket(db, ticket_id)
+    t.time_spent_minutes += body.minutes
+    service_desk.add_message(db, t, pc.principal.user.id, f"Logged {body.minutes} min{': ' + body.note if body.note else ''}",
+                             staff=True, internal=True, kind="time")
+    db.commit()
+    return desk_ticket(ticket_id, pc)
+
+
+class DeskReportIn(BaseModel):
+    findings: str = Field(default="", max_length=20000)
+    actions_taken: str = Field(default="", max_length=20000)
+    recommendations: str = Field(default="", max_length=20000)
+    verification: str = Field(default="", max_length=5000)
+
+
+@ops.put("/service-desk/{ticket_id}/report")
+def desk_report(ticket_id: uuid.UUID, body: DeskReportIn,
+                pc: PlatformContext = Depends(require_platform(P.OPS_SERVICE_DESK))) -> dict:
+    db = pc.db
+    t = _desk_ticket(db, ticket_id)
+    author = pc.principal.user
+    t.report = body.model_dump() | {"updated_at": utcnow().isoformat(), "engineer": author.full_name or author.email}
+    t.updated_at = utcnow()
+    audit.record(db, "service_desk.report_saved", actor=pc.actor(), tenant_id=t.tenant_id, target_type="ticket", target_id=t.id)
+    db.commit()
+    return desk_ticket(ticket_id, pc)
+
+
+class DeskBillingIn(BaseModel):
+    billing_status: str = Field(pattern="^(included|quote|billable|waived)$")
+    price_minor: int | None = Field(default=None, ge=0)
+
+
+@ops.put("/service-desk/{ticket_id}/billing")
+def desk_billing(ticket_id: uuid.UUID, body: DeskBillingIn,
+                 pc: PlatformContext = Depends(require_platform(P.OPS_SERVICE_DESK))) -> dict:
+    db = pc.db
+    t = _desk_ticket(db, ticket_id)
+    before = (t.billing_status, t.price_minor)
+    t.billing_status, t.price_minor = body.billing_status, body.price_minor
+    audit.record(db, "service_desk.billing_changed", actor=pc.actor(), tenant_id=t.tenant_id, target_type="ticket",
+                 target_id=t.id, details={"from": list(before), "to": [body.billing_status, body.price_minor]})
+    db.commit()
+    return desk_ticket(ticket_id, pc)
+
+
+@ops.get("/service-desk-staff")
+def desk_staff(pc: PlatformContext = Depends(require_platform(P.OPS_SERVICE_DESK))) -> list[dict]:
+    """Engineers a request can be assigned to."""
+    roles = [k for k, r in ALL_ROLES.items() if r.scope == "platform" and P.OPS_SERVICE_DESK in r.permissions]
+    rows = pc.db.execute(select(User).join(PlatformRoleAssignment, PlatformRoleAssignment.user_id == User.id)
+                         .where(User.is_active.is_(True), PlatformRoleAssignment.role_key.in_(roles))
+                         .order_by(User.full_name)).scalars().unique()
+    return [{"id": str(u.id), "name": u.full_name or u.email, "email": u.email} for u in rows]

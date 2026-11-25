@@ -228,3 +228,33 @@ export function MalwareBadge({ status, signatures, genuine }: { status?: string 
   return <StatusBadge spec={MALWARE[status] ?? MALWARE.unavailable} value={status} tooltip={tip} />;
 }
 
+
+/** Support / service request status. */
+const TICKET_STATUS: Record<string, Spec> = {
+  open: { tone: "cyber", icon: IconCircleDashed, label: "Open" },
+  in_progress: { tone: "info", icon: IconLoader2, label: "In progress" },
+  awaiting_customer: { tone: "amber", icon: IconClock, label: "Waiting for you" },
+  resolved: { tone: "secure", icon: IconCircleCheck, label: "Resolved" },
+  closed: { tone: "gray", icon: IconCircleCheck, label: "Closed" },
+  cancelled: { tone: "gray", icon: IconBan, label: "Cancelled" },
+};
+
+export function TicketStatusBadge({ status, staffView }: { status: string; staffView?: boolean }) {
+  const spec = TICKET_STATUS[status] ?? { tone: "gray" as Tone, icon: IconHelpCircle };
+  return <StatusBadge spec={staffView && status === "awaiting_customer" ? { ...spec, label: "Waiting for customer" } : spec} value={status} />;
+}
+
+/** SLA target state: on_track / due_soon / overdue / met / missed / none. */
+const SLA: Record<string, Spec> = {
+  on_track: { tone: "secure", icon: IconClock, label: "On track" },
+  due_soon: { tone: "amber", icon: IconClock, label: "Due soon" },
+  overdue: { tone: "threat", icon: IconAlertTriangle, label: "Overdue" },
+  met: { tone: "secure", icon: IconCircleCheck, label: "Met" },
+  missed: { tone: "amber", icon: IconCircleX, label: "Missed" },
+  none: { tone: "gray", icon: IconCircleDashed, label: "—" },
+};
+
+export function SlaBadge({ state, label, tooltip }: { state: string; label?: string; tooltip?: ReactNode }) {
+  const spec = SLA[state] ?? SLA.none;
+  return <StatusBadge spec={label ? { ...spec, label: `${label}: ${spec.label}` } : spec} value={state} size="xs" tooltip={tooltip} />;
+}

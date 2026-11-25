@@ -102,6 +102,8 @@ class Settings(BaseSettings):
     # Platform self-monitoring (services/platform_alerts.py): extra recipients besides staff with health access,
     # and a switch for the in-API watchdog (it only runs in staging/production).
     platform_alert_emails: list[str] = Field(default_factory=list)
+    # Shared inbox told about new service-desk requests (besides staff with the service-desk role).
+    support_emails: list[str] = Field(default_factory=list)
     platform_alerts_enabled: bool = True
 
     # Personal-data retention (NDPA storage limitation): sign-in history and ended sessions.
