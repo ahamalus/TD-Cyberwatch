@@ -410,6 +410,11 @@ def approve_baseline(website_id: uuid.UUID, body: BaselineIn, ctx: TenantContext
         raise NotFound("Snapshot not found.")
     if snap.status not in ("completed", "partial"):
         raise ValidationFailed("Only completed or partial snapshots can become the baseline.")
+    from app.monitoring.file_scan import has_entries
+
+    if not has_entries(db, snap.id):
+        raise ValidationFailed("This scan's full file list is no longer kept (only the baseline and the 3 most recent "
+                               "scans keep one). Approve one of the recent scans instead.")
     previous = w.baseline_snapshot_id
     w.baseline_snapshot_id = snap.id
     w.baseline_approved_by = ctx.user.id

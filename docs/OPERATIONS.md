@@ -209,6 +209,19 @@ and runs a live check. Reading it:
   the server's public IP. These show as *Degraded*, never *Down*.
 - `http_status` 5xx: the site itself is returning errors (PHP errors, database down, resource limits).
 
+## Database size
+
+Each file scan records its summary and the changes it found (kept for the plan's retention period). The full
+per-file list of a scan is kept only for the website's approved baseline and its 3 most recent scans, which is
+all that comparisons and baseline approval need; older lists are removed when the next scan finishes. To see what
+uses space:
+```
+sudo -u cyberwatch docker compose exec db sh -c 'psql -U "$POSTGRES_USER" "$POSTGRES_DB" -c "select relname, pg_size_pretty(pg_total_relation_size(relid)) from pg_statio_user_tables order by pg_total_relation_size(relid) desc limit 10;"'
+```
+PostgreSQL reuses freed space automatically but does not shrink its files. To give space back to the disk once
+(locks the table for a minute or two; scans wait), run in a quiet hour:
+`sudo -u cyberwatch docker compose exec db sh -c 'psql -U "$POSTGRES_USER" "$POSTGRES_DB" -c "VACUUM (FULL, ANALYZE) file_snapshot_entries;"'`
+
 ## Power cuts and unclean shutdowns
 
 After an outage the containers restart on their own (`restart: unless-stopped`) and PostgreSQL recovers from its

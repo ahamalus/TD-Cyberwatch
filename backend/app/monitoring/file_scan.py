@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
 
-from sqlalchemy import Text, func, insert, select, update
+from sqlalchemy import Text, delete, func, insert, select, update
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
@@ -116,6 +116,29 @@ def load_previous(db: Session, website_id: uuid.UUID, exclude_snapshot: uuid.UUI
     if prev is None:
         return None, {}
     return prev, load_entries(db, prev.id)
+
+
+# Full per-file lists are kept only where they are used: the approved baseline (comparison) and the newest
+# scans (the next scan diffs against the latest; a recent one can be approved as the baseline). Every scan's
+# summary, its detected changes and the current inventory are kept regardless. Without this, each scan stored a
+# complete copy of every file of every site (gigabytes within days).
+KEEP_ENTRY_SNAPSHOTS = 3
+
+
+def prune_snapshot_entries(db: Session, website: Website) -> int:
+    keep = set(db.execute(select(FileSnapshot.id).where(
+        FileSnapshot.website_id == website.id, FileSnapshot.status.in_(["completed", "partial"]))
+        .order_by(FileSnapshot.started_at.desc()).limit(KEEP_ENTRY_SNAPSHOTS)).scalars())
+    keep |= set(db.execute(select(FileSnapshot.id).where(
+        FileSnapshot.website_id == website.id, FileSnapshot.status == "running")).scalars())
+    if website.baseline_snapshot_id:
+        keep.add(website.baseline_snapshot_id)
+    old = select(FileSnapshot.id).where(FileSnapshot.website_id == website.id, FileSnapshot.id.notin_(keep))
+    return db.execute(delete(FileSnapshotEntry).where(FileSnapshotEntry.snapshot_id.in_(old))).rowcount or 0
+
+
+def has_entries(db: Session, snapshot_id: uuid.UUID) -> bool:
+    return db.execute(select(FileSnapshotEntry.path).where(FileSnapshotEntry.snapshot_id == snapshot_id).limit(1)).first() is not None
 
 
 def load_entries(db: Session, snapshot_id: uuid.UUID) -> dict[str, PrevEntry]:
@@ -788,6 +811,7 @@ def run_file_scan(
     website.last_scan_status = snapshot.status
     if snapshot.status in ("completed", "partial"):
         website.last_successful_scan_at = snapshot.completed_at
+    pruned = prune_snapshot_entries(db, website)
     db.commit()
     return FileScanOutcome(
         snapshot.id,
@@ -798,6 +822,7 @@ def run_file_scan(
             "files_hashed": result.files_hashed,
             "files_reused": result.files_reused,
             "files_hashed_remotely": result.files_hashed_remotely,
+            "old_file_list_rows_removed": pruned,
             "content_mode": mode,
             "errors": len(result.errors),
             "limits_hit": sorted(result.limits_hit),

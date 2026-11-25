@@ -19,7 +19,7 @@ from app.core.permissions import P
 from app.db.session import get_db
 from app.models import FileChange, FileInventoryItem, FileSnapshot, ScanJob, SnapshotError, SoftwareInstall, Website
 from app.monitoring import jobs
-from app.monitoring.file_scan import load_entries
+from app.monitoring.file_scan import has_entries, load_entries
 from app.monitoring.inventory import ROOT, EntryRecord, InventoryResult, diff_inventories
 from app.monitoring.rules import RULES, classify_change
 from app.schemas.common import PageParams, paginate
@@ -271,6 +271,11 @@ def compare(
             .order_by(FileSnapshot.started_at.desc()).limit(1)).scalar_one()
     if base_snap.website_id != w.id or target_snap.website_id != w.id:
         raise ValidationFailed("Snapshots must belong to this website.")
+    for snap, which in ((base_snap, "baseline"), (target_snap, "comparison")):
+        if not has_entries(db, snap.id):
+            raise ValidationFailed(f"The file list of the {which} scan from {snap.started_at:%d %b %Y %H:%M} UTC is no "
+                                   "longer kept (only the baseline and the 3 most recent scans keep one). "
+                                   "Compare with a recent scan.")
     prev = load_entries(db, base_snap.id)
     cur_entries = load_entries(db, target_snap.id)
     result = InventoryResult(status="completed" if target_snap.status == "completed" else "partial")
