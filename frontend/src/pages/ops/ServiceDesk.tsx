@@ -109,7 +109,8 @@ function FixFilesSection({ ticketId }: { ticketId: string }) {
                     <Text size="xs" c="dimmed">{c.reasons.join(" · ")}</Text>
                     {c.last_action && <Text size="xs" c="var(--mantine-color-secure-text)">{humanize(c.last_action.action)} {fmtRelative(c.last_action.at)}</Text>}
                   </Box>
-                  <Group gap={4} wrap="nowrap">
+                  <Group gap={4} wrap="nowrap" style={{ flexShrink: 0 }}>
+                    {c.actions.length === 0 && c.last_action && <Text size="xs" c="dimmed">Rescan to refresh</Text>}
                     {c.actions.includes("restore_genuine") && (
                       <Button size="compact-xs" loading={act.isPending && act.variables?.path === c.path}
                         onClick={() => window.confirm(`Replace ${c.path} with the official ${c.vendor_ref} version? A copy of the current file is kept.`) && act.mutate({ action: "restore_genuine", path: c.path, expected_sha256: c.sha256 })}>Restore official</Button>
@@ -133,7 +134,7 @@ function FixFilesSection({ ticketId }: { ticketId: string }) {
                 <Badge size="xs" color={a.status === "done" ? "secure" : a.status === "undone" ? "gray" : "threat"} mr={6}>{humanize(a.status)}</Badge>
                 {humanize(a.action)} <span className="cw-mono">{a.path}</span> · {a.performed_by} · {fmtRelative(a.performed_at)}{a.error ? ` · ${a.error}` : ""}
               </Text>
-              {a.can_undo && !d.blocked && <Button size="compact-xs" variant="subtle" onClick={() => window.confirm(`Put ${a.path} back as it was before?`) && undo.mutate(a.id)}>Undo</Button>}
+              {a.can_undo && !d.blocked && <Button size="compact-xs" variant="subtle" style={{ flexShrink: 0 }} onClick={() => window.confirm(`Put ${a.path} back as it was before?`) && undo.mutate(a.id)}>Undo</Button>}
             </Group>
           ))}
         </Stack>

@@ -272,3 +272,18 @@ def test_compare_file_command_reports_identical_bytes(hacked, capsys):
     cli.main(["compare-file", "alpha-site.com", "wp-admin/index.php"])
     out = capsys.readouterr().out
     assert "IDENTICAL" in out and "via SFTP (real)" in out
+
+
+def test_a_failed_action_explains_itself_and_fixed_files_offer_no_second_action(hacked):
+    h = hacked
+    planted = _cands(h)["wp-includes/class-wp-cache-helper.php"]
+    core = _cands(h)["wp-admin/index.php"]
+    # Someone removed the file on the server after the scan: a clear reason, not a server error.
+    (h["site"] / "wp-includes" / "class-wp-cache-helper.php").unlink()
+    r = _act(h, "quarantine", planted["path"], planted["sha256"])
+    assert r.status_code == 422, r.text
+    assert "not on the server" in r.json()["error"]["message"]
+    assert r.json()["error"]["details"]["status"] == "failed"
+    # A fixed file shows no action until the next scan updates the list.
+    assert _act(h, "restore_genuine", core["path"], core["sha256"]).status_code == 200
+    assert _cands(h)["wp-admin/index.php"]["actions"] == []

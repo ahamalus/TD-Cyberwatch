@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -73,7 +74,8 @@ def _body(request: Request, code: str, message: str, details: Any = None) -> dic
         "error": {
             "code": code,
             "message": message,
-            "details": details,
+            # Details may hold dates, UUIDs, etc.: encode them, or the error itself would become a 500.
+            "details": jsonable_encoder(details) if details is not None else None,
             "request_id": getattr(request.state, "request_id", None),
         }
     }

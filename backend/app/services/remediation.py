@@ -253,6 +253,8 @@ def candidates(db: Session, website: Website, incident_ids: list[str]) -> list[d
         elif item.vendor_status != "verified":
             actions.append("quarantine")
         a = done.get(path)
+        if a is not None and a.performed_at >= (item.last_seen_at or a.performed_at):
+            actions = []  # already fixed; the next scan updates the list (undo is under "Changes made")
         out.append({"path": path, "size": item.size, "sha256": item.sha256, "reasons": sorted(set(why)),
                     "actions": actions, "vendor_ref": item.vendor_ref,
                     "last_action": {"id": str(a.id), "action": a.action, "at": a.performed_at} if a else None})
