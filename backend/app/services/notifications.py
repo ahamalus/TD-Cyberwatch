@@ -155,6 +155,13 @@ def monthly_usage(db: Session, tenant_id: uuid.UUID) -> int:
     ).scalar_one()
 
 
+INCIDENT_HEADLINES = {
+    "file_integrity": "File change detected", "malware": "Malware detected", "suspicious_file": "Suspicious file detected",
+    "availability": "Website unavailable", "tls": "TLS certificate problem", "connection": "Hosting connection problem",
+    "log_activity": "Suspicious website activity", "suspected_compromise": "Possible compromise detected",
+}
+
+
 def render_incident(incident: Incident, website: Website | None, tenant: Tenant, reason: str) -> tuple[str, str, dict[str, str]]:
     settings = get_settings()
     sev = SEVERITY_LABEL[incident.severity]
@@ -185,6 +192,18 @@ def render_incident(incident: Incident, website: Website | None, tenant: Tenant,
               "category": incident.category.replace("_", " ").capitalize(),
               "detected": f"{incident.first_detected_at:%d %b %Y, %H:%M} UTC", "summary": incident.summary,
               "action": incident.recommended_action, "link": link, "demo": bool(incident.is_demo or tenant.is_demo)}
+    # HTML email extras: the affected file (or address), the event in a few words, confidence, a short headline.
+    resources = [r for r in (incident.affected_resources or []) if isinstance(r, dict)]
+    first = next((r for r in resources if r.get("type") == "file" and r.get("path")), None) or \
+        next((r for r in resources if r.get("value") or r.get("path")), None)
+    params |= {
+        "resource": (first.get("path") or first.get("value")) if first else None,
+        "resource_type": first.get("type") if first else None,
+        "resource_count": len([r for r in resources if r.get("type") == (first or {}).get("type")]),
+        "event": incident.title.split(":", 1)[0][:80] if ":" in incident.title else incident.category.replace("_", " ").capitalize(),
+        "confidence": incident.confidence.capitalize() + (" (needs verification)" if incident.requires_human_verification else ""),
+        "headline": INCIDENT_HEADLINES.get(incident.category, incident.title),
+    }
     return subject, body, params
 
 
@@ -407,7 +426,7 @@ def deliver(db: Session, n: Notification) -> None:
             from app.services.email_templates import render_html
 
             n.provider_message_id = send_email(n.recipient, n.subject, n.body,
-                                               render_html(n.subject, n.body, n.template, n.params))
+                                               render_html(n.subject, n.body, n.template, n.params, n.category))
         elif n.channel == "whatsapp":
             name, lang, keys = WHATSAPP_TEMPLATES.get(n.template, WHATSAPP_TEMPLATES["test"])
             n.provider_message_id = send_whatsapp_template(
