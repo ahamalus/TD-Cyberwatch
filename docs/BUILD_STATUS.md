@@ -15,7 +15,7 @@ Last updated: 2026-10-19 (session 1). Statuses: **Not Started · In Progress · 
 | Email | Zoho (smtppro.zoho.com) as hello@trustdata.ng. SPF includes Zoho; Zoho DKIM verified; DMARC p=none (move to quarantine after review) |
 | Phase 2 started | trustdata.ng connected via cPanel UAPI (wghp11.wghservers.com): connection test and capability discovery passed on the live server. The first full scan measured about 2.5 s per file (one HTTPS request per file over Starlink), so a two-WordPress site could not finish in 1 h. This led to parallel keep-alive reads, incremental scans and resumable full passes |
 
-## Roadmap progress (2026-11-22)
+## Roadmap progress (2026-11-26)
 
 | Phase | Status | Notes |
 |---|---|---|
@@ -25,6 +25,10 @@ Last updated: 2026-10-19 (session 1). Statuses: **Not Started · In Progress · 
 | 3. Quality and speed | Done | CI green (backend, frontend, browser tests incl. accessibility); code-split frontend; 200k-file scan in 45 s; per-server scan limit; RLS enforced via restricted DB login |
 | 4. Payments and WhatsApp | Built; live test pending | Refunds, disputes, WhatsApp receipts/STOP/fallback. Needs Paystack test keys and a Meta WhatsApp account for the live test |
 | 5. Hardening and compliance | Built; external items pending | Organisation MFA, single-use TOTP, off-server audit anchors, WCAG 2.2 AA automated checks, NDPA notice/export/erasure/retention. Pending: manual accessibility review (ACCESSIBILITY.md), NDPA management items (PRIVACY_NDPA.md), external pen test (PENTEST_SCOPE.md) |
+| 6. Access-log analysis | Done | Live logs and ~/logs archives; brute force, flagged files used, uploads executed, sensitive files exposed |
+| 7. Connectors | Built; live checks pending | SSH read-only (server-side fingerprints), WHM API (simulated server). Plesk, DirectAdmin, Imunify360, host agent, WordPress plugin still planned |
+| 8. Operations | Done | NOC wall, NOC Monitor role, staff disable/re-invite, platform self-alerting (email), availability retry and firewall detection, power-cut catch-up, database growth fix |
+| 9. Services and remediation | Built; first live use | Service desk with SLAs and allowances; customer authorisation and engineer grants; restore genuine WordPress files and quarantine with undo; entry-point investigation (logs, attacker IPs, outdated/vulnerable software); cPanel byte-exact reads |
 
 ## Test runs executed (actual results)
 
@@ -117,16 +121,25 @@ Last updated: 2026-10-19 (session 1). Statuses: **Not Started · In Progress · 
 - `age` key pair for backups; off-site backup storage.
 
 ## Known limitations
-- Polling-based detection only; no real-time file events or log analysis yet. Malware scanning covers files up to 10 MB that CyberWatch can read; it cannot see what is never written to disk (e.g. injected database content).
-- Risk scoring is a simple documented heuristic.
-- Frontend bundle not code-split; UI not independently accessibility-audited.
+- Polling-based detection only; no real-time file events. Malware scanning covers files up to 10 MB that CyberWatch can read; it cannot see what is never written to disk (e.g. injected database content).
+- Risk scoring per incident is a documented heuristic; there is no per-code-change analysis yet (planned: A, B below).
+- CyberWatch keeps fingerprints, not copies, of a site's own files: custom files cannot be diffed or restored (planned: E).
+- Remediation covers files only (WordPress core/plugin restore, quarantine); database cleanup is manual (planned: F).
+- WHM and SSH connectors are tested against simulated servers only; first live use should follow CONNECTORS.md checklists.
+- Investigations can only explain what the host's access logs still contain.
 - Report generation is synchronous (fine for pilot scale; move to worker for large estates).
 
-## Next implementation tasks (continuation plan)
-1. Deploy to a staging VPS with Docker; run backup/restore drill; run CI on GitHub.
-2. Verify cPanel UAPI against a live account (CONNECTORS.md checklist); fix parser if needed.
-3. Connect 2 real hosting accounts / 3 websites (Phase 1 proof of concept on real infrastructure); record results here.
-4. Configure SMTP and Paystack sandbox; run end-to-end payment test.
-5. ClamAV in an isolated scanner container (stream file bytes from workers; record engine/signature version; enforce size/time limits; archive handling).
-6. Playwright E2E journeys in CI; code-split frontend routes.
-7. Load test with synthetic 200k-file inventories; tune batch sizes and worker concurrency.
+## Planned upgrades (agreed 2026-11-26, in suggested order)
+
+| # | Upgrade | What it adds | Needs |
+|---|---|---|---|
+| A | **Code risk analysis (built-in)** | Every changed PHP file analysed without sending code anywhere: exact injected lines for WordPress files (diff against the official copy), indicators (decode-and-execute, shell commands from request input, file writes from uploads, remote payload downloads, hidden administrator creation, changes inside login/authentication functions, heavy obfuscation), 0-100 score and Low/Medium/High/Critical, affected functions, impact, remediation, false-positive assessment | ~2-3 days |
+| B | **AI code review (Claude, opt-in per organisation)** | Tailored explanation, impact, remediation and false-positive judgement for Medium+ findings, alongside (never replacing) A; structured output; secrets stripped before sending; falls back to A on refusal | Anthropic API key (server `.env`); privacy notice adds Anthropic as sub-processor; ~$0.02-0.05 per reviewed file |
+| C | **Security assessment (automated, non-intrusive)** | On verified websites only, with the customer's authorisation per scan: TLS and security headers, exposed files (.env, .git, backups, wp-config copies), directory listing, WordPress user enumeration, XML-RPC, version disclosure, admin pages exposed, known-vulnerable software (reuses the investigation's version/vulnerability check), cookie flags; rate-limited, no exploitation, no password guessing, no load; findings as incidents plus a report | ~3-4 days |
+| D | **Penetration testing as a managed service** | Service-desk request type "Penetration test" with a scope and rules-of-engagement form the customer signs, testing window, staff tooling, findings tracked to retest, and a report/attestation template | Qualified testers; contract template; insurance |
+| E | **Known-good copies (remediation phase 3)** | Encrypted copies of a site's own files at the approved baseline: diffs for any file (feeds A), restore of custom theme files | Storage sizing |
+| F | **WordPress plugin connector** | Real-time file events, database checks (injected posts/options, rogue admins), safe plugin updates with rollback, password/key resets, backups | Plugin build and wordpress.org listing |
+| G | **Small usability items** | "Restore all official files" (core/plugin only); Remove in the website list menu | - |
+| H | **Other connectors** | Imunify360 (via a host partner), host agent, Plesk/DirectAdmin when a customer needs them | Host cooperation / test accounts |
+| I | **Release management** | Merge the feature branch to main, tagged releases, update/rollback procedure | - |
+| J | **Live checks still owed** | WHM and SSH on real servers; Paystack test mode and WhatsApp; external pen test of CyberWatch itself (PENTEST_SCOPE.md) | Accounts and keys from Trust Data |
