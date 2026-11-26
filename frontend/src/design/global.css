@@ -1,0 +1,139 @@
+/* Global surface tokens. Light = customer/admin default; dark = operations. */
+:root {
+  --cw-navy: #0b1220;
+  --cw-slate: #111b2e;
+  --cw-blue: #1677ff; /* brand blue: borders and decoration only */
+  --cw-blue-text: #0f63db; /* blue for text or behind white text: >= 4.5:1 (WCAG AA) */
+  --cw-wordmark-accent: var(--cw-blue-text);
+  --cw-light-blue: #eaf2ff;
+  --cw-cloud: #f5f7fb;
+  --cw-white: #ffffff;
+  --cw-muted: #5f6b7a; /* >= 4.7:1 on every light surface (WCAG AA) */
+  --cw-border: #e2e8f0;
+  --cw-green: #16a875;
+  --cw-amber: #d99a17;
+  --cw-red: #dc4545;
+  --cw-cyan: #0891b2;
+}
+
+:root[data-mantine-color-scheme="light"] {
+  --cw-page-bg: var(--cw-cloud);
+  --cw-surface: var(--cw-white);
+  --cw-surface-alt: #f8fafc;
+  --cw-text: var(--cw-navy);
+  --cw-text-muted: var(--cw-muted);
+  --cw-line: var(--cw-border);
+  --cw-sidebar-bg: var(--cw-white);
+  --cw-sidebar-active: var(--cw-light-blue);
+  /* Mantine's default dimmed grey (#868e96) is only ~3.2:1 on white. */
+  --mantine-color-dimmed: #5f6b7a;
+}
+
+/* Text colour of "light" variant badges, alerts and buttons: the palette's darkest shades on the pale tint
+   (Mantine's default shade is below 4.5:1 for amber, green and blue). */
+:root[data-mantine-color-scheme="light"] {
+  --cw-light-text-cyber: var(--mantine-color-cyber-9);
+  --cw-light-text-secure: var(--mantine-color-secure-9);
+  --cw-light-text-amber: var(--mantine-color-amber-9);
+  --cw-light-text-threat: var(--mantine-color-threat-9);
+  --cw-light-text-info: var(--mantine-color-info-9);
+  --cw-light-text-navy: var(--mantine-color-navy-8);
+  --cw-light-text-gray: var(--mantine-color-gray-8);
+}
+:root[data-mantine-color-scheme="dark"] {
+  --cw-light-text-cyber: var(--mantine-color-cyber-2);
+  --cw-light-text-secure: var(--mantine-color-secure-2);
+  --cw-light-text-amber: var(--mantine-color-amber-2);
+  --cw-light-text-threat: var(--mantine-color-threat-2);
+  --cw-light-text-info: var(--mantine-color-info-2);
+  --cw-light-text-navy: var(--mantine-color-navy-1);
+  --cw-light-text-gray: var(--mantine-color-gray-3);
+}
+
+:root[data-mantine-color-scheme="dark"] {
+  --cw-page-bg: var(--cw-navy);
+  --cw-surface: var(--cw-slate);
+  --cw-surface-alt: #0e1726;
+  --cw-text: #e6ebf3;
+  --cw-text-muted: #94a3b8;
+  --cw-line: #22314b;
+  --cw-sidebar-bg: #0a101c;
+  --cw-sidebar-active: rgba(22, 119, 255, 0.16);
+  --mantine-color-body: var(--cw-navy);
+  --mantine-color-default-border: #22314b;
+  --mantine-color-dimmed: #94a3b8;
+  --cw-wordmark-accent: #76aaff;
+  /* Brand blue text on navy needs a lighter shade to reach 4.5:1. */
+  --mantine-color-anchor: #76aaff;
+}
+
+body {
+  background: var(--cw-page-bg);
+  color: var(--cw-text);
+  font-feature-settings: "cv11", "ss01", "tnum";
+  -webkit-font-smoothing: antialiased;
+}
+
+[data-mantine-color-scheme="dark"] .mantine-Card-root,
+[data-mantine-color-scheme="dark"] .mantine-Paper-root {
+  background-color: var(--cw-surface);
+}
+
+.cw-metric {
+  font-variant-numeric: tabular-nums;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+}
+
+.cw-mono {
+  font-family: var(--mantine-font-family-monospace);
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.cw-nav-link {
+  border-radius: 8px;
+  font-weight: 500;
+  color: var(--cw-text-muted);
+}
+.cw-nav-link[data-active] {
+  background: var(--cw-sidebar-active);
+  color: var(--cw-blue-text);
+}
+[data-mantine-color-scheme="dark"] .cw-nav-link[data-active] {
+  color: #7fb2ff;
+}
+
+.cw-table-scroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.cw-skip-link {
+  position: absolute;
+  left: -9999px;
+  top: 8px;
+  z-index: 1000;
+  padding: 8px 12px;
+  background: var(--cw-blue-text);
+  color: white;
+  border-radius: 6px;
+}
+.cw-skip-link:focus {
+  left: 8px;
+}
+
+.cw-hero {
+  background:
+    radial-gradient(1200px 500px at 85% -10%, rgba(22, 119, 255, 0.22), transparent 60%),
+    linear-gradient(180deg, #0b1220 0%, #0f1a2e 100%);
+  color: #e6ebf3;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.001ms !important;
+    transition-duration: 0.001ms !important;
+  }
+}

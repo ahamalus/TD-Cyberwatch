@@ -1,0 +1,95 @@
+"""Retention: prune historical monitoring data beyond each tenant's plan limit.
+
+Baseline snapshots are never pruned while referenced. Incident evidence and
+audit events are not touched here (they follow their own, longer policy).
+"""
+
+from __future__ import annotations
+
+from datetime import timedelta
+
+from sqlalchemy import delete, select
+from sqlalchemy.orm import Session
+
+from app.core.config import get_settings
+from app.db.base import utcnow
+from app.models import (
+    AvailabilityCheck,
+    FileChange,
+    FileSnapshot,
+    LoginEvent,
+    Notification,
+    Tenant,
+    TlsCheck,
+    UserSession,
+    Website,
+    WorkerHeartbeat,
+)
+from app.services.entitlements import effective
+
+KEEP_RECENT_SNAPSHOTS = 5
+
+
+REMEDIATION_BACKUP_DAYS = 90
+
+
+def run_retention(db: Session) -> dict[str, int]:
+    stats = {"snapshots": 0, "availability_checks": 0, "tls_checks": 0, "file_changes": 0, "notifications": 0,
+             "login_events": 0, "sessions": 0}
+    # Personal data kept only as long as needed (NDPA storage limitation).
+    s = get_settings()
+    now = utcnow()
+    stats["login_events"] = db.execute(
+        delete(LoginEvent).where(LoginEvent.created_at < now - timedelta(days=s.login_history_days))).rowcount or 0
+    # Heartbeats of worker containers replaced by later deployments.
+    stats["worker_heartbeats"] = db.execute(
+        delete(WorkerHeartbeat).where(WorkerHeartbeat.last_seen_at < now - timedelta(days=7))).rowcount or 0
+    # Encrypted copies of files changed by remediation: kept for undo for 90 days, then deleted (the record of
+    # the change stays; only undo is no longer possible).
+    stats["remediation_backups"] = 0
+    from app.models import RemediationAction
+    from app.services import storage
+
+    for a in db.execute(select(RemediationAction).where(
+            RemediationAction.backup_key.is_not(None),
+            RemediationAction.performed_at < now - timedelta(days=REMEDIATION_BACKUP_DAYS))).scalars():
+        storage.delete(a.tenant_id, a.backup_key)
+        a.backup_key, a.backup_nonce = None, None
+        stats["remediation_backups"] += 1
+    ended = now - timedelta(days=s.ended_session_days)
+    stats["sessions"] = db.execute(
+        delete(UserSession).where((UserSession.expires_at < ended) | (UserSession.revoked_at < ended))).rowcount or 0
+    for tenant in db.execute(select(Tenant)).scalars():
+        days = int(effective(db, tenant.id).get("retention_days", 30))
+        cutoff = utcnow() - timedelta(days=max(days, 7))
+        baselines = set(
+            db.execute(select(Website.baseline_snapshot_id).where(
+                Website.tenant_id == tenant.id, Website.baseline_snapshot_id.is_not(None))).scalars()
+        )
+        for website_id in db.execute(select(Website.id).where(Website.tenant_id == tenant.id)).scalars():
+            recent = set(
+                db.execute(
+                    select(FileSnapshot.id).where(FileSnapshot.website_id == website_id)
+                    .order_by(FileSnapshot.started_at.desc()).limit(KEEP_RECENT_SNAPSHOTS)
+                ).scalars()
+            )
+            old = db.execute(
+                select(FileSnapshot.id).where(FileSnapshot.website_id == website_id, FileSnapshot.started_at < cutoff)
+            ).scalars().all()
+            doomed = [s for s in old if s not in baselines and s not in recent]
+            if doomed:
+                stats["file_changes"] += db.execute(
+                    delete(FileChange).where(FileChange.snapshot_id.in_(doomed))
+                ).rowcount or 0
+                stats["snapshots"] += db.execute(delete(FileSnapshot).where(FileSnapshot.id.in_(doomed))).rowcount or 0
+        stats["availability_checks"] += db.execute(
+            delete(AvailabilityCheck).where(AvailabilityCheck.tenant_id == tenant.id, AvailabilityCheck.checked_at < cutoff)
+        ).rowcount or 0
+        stats["tls_checks"] += db.execute(
+            delete(TlsCheck).where(TlsCheck.tenant_id == tenant.id, TlsCheck.checked_at < cutoff)
+        ).rowcount or 0
+        stats["notifications"] += db.execute(
+            delete(Notification).where(Notification.tenant_id == tenant.id, Notification.created_at < cutoff,
+                                       Notification.status.in_(["sent", "failed", "suppressed", "unconfigured"]))
+        ).rowcount or 0
+    return stats

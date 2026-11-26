@@ -1,0 +1,486 @@
+/**
+ * Security operations portal (dark theme by default). Shows cross-tenant
+ * operational metadata only; customer file paths, hashes and evidence are
+ * visible solely through a customer-approved managed-service grant.
+ */
+import { Alert, Anchor, Badge, Box, Button, Card, Grid, Group, Modal, MultiSelect, Select, SimpleGrid, Stack, Table, Text, Textarea, TextInput, Tooltip } from "@mantine/core";
+import { notifications } from "@mantine/notifications";
+import {
+  IconActivity,
+  IconAlertTriangle,
+  IconClockPause,
+  IconCpu,
+  IconFileSearch,
+  IconListDetails,
+  IconLock,
+  IconPlugConnectedX,
+} from "@tabler/icons-react";
+import { useMutation, useQuery } from "@tanstack/react-query";
+import { useState } from "react";
+import { Link } from "react-router-dom";
+import { usePlatformCan } from "../../api/auth";
+import { api, errorMessage } from "../../api/client";
+import type { Job, Page } from "../../api/types";
+import { fmtBytes, fmtDateTime, fmtRelative, humanize, minCharsHint, scanJobDetail } from "../../components/format";
+import { ConnectionBadge, HealthBadge, IncidentStatusBadge, ScanBadge, SeverityBadge } from "../../components/status";
+import { DataTable, EmptyState, ErrorState, KeyValue, LoadingBlock, PageHeader, Section, StatCard } from "../../components/ui";
+
+const onError = (e: unknown) => notifications.show({ color: "threat", title: "Action failed", message: errorMessage(e) });
+
+/* eslint-disable @typescript-eslint/no-explicit-any */
+
+export function OpsOverviewPage() {
+  const q = useQuery({ queryKey: ["ops-overview"], queryFn: () => api.get<any>("/ops/overview"), refetchInterval: 15_000 });
+  if (q.error) return <ErrorState error={q.error} onRetry={() => q.refetch()} />;
+  const d = q.data;
+  const alive = d?.workers.filter((w: any) => w.alive).length ?? 0;
+  return (
+    <>
+      <PageHeader title="Security overview" description="Live operational view across all customers. Refreshes every 15 seconds." />
+      {d?.alerts.length > 0 && (
+        <Alert color="threat" icon={<IconAlertTriangle />} mb="md" title="Infrastructure alerts">
+          {d.alerts.map((a: any) => <Text size="sm" key={a.message}>[{a.severity}] {a.message}</Text>)}
+        </Alert>
+      )}
+      <SimpleGrid cols={{ base: 2, md: 3, xl: 6 }} mb="md">
+        <StatCard label="Pending scans" icon={IconClockPause} loading={!d} value={d?.jobs.queued} to="/ops/jobs?status=queued" />
+        <StatCard label="Running" icon={IconActivity} loading={!d} value={d?.jobs.running} to="/ops/jobs?status=running" />
+        <StatCard label="Failed (24h)" icon={IconAlertTriangle} tone={d?.jobs.failed_24h ? "threat" : "secure"} loading={!d} value={d?.jobs.failed_24h} to="/ops/jobs?status=failed" />
+        <StatCard label="Stale jobs" icon={IconClockPause} tone={d?.jobs.stale_running ? "amber" : "secure"} loading={!d} value={d?.jobs.stale_running} />
+        <StatCard label="Failing connections" icon={IconPlugConnectedX} tone={d?.failing_connections ? "amber" : "secure"} loading={!d} value={d?.failing_connections} to="/ops/diagnostics" />
+        <StatCard label="Workers alive" icon={IconCpu} tone={alive && !d?.workers.some((w: any) => w.state === "failed") ? "secure" : "threat"} loading={!d} value={d ? String(alive) : "—"} to="/ops/workers" />
+      </SimpleGrid>
+      <Grid>
+        <Grid.Col span={{ base: 12, lg: 8 }}>
+          <Section title="High-priority open incidents" actions={<Anchor component={Link} to="/ops/incidents" size="sm">All incidents</Anchor>}>
+            {!d ? <LoadingBlock /> : d.high_priority_incidents.length === 0 ? <EmptyState title="No critical or high incidents open" /> : (
+              <div className="cw-table-scroll">
+                <Table miw={560}>
+                  <Table.Tbody>
+                    {d.high_priority_incidents.map((i: any) => (
+                      <Table.Tr key={i.id}>
+                        <Table.Td><SeverityBadge severity={i.severity} /></Table.Td>
+                        <Table.Td><Text size="sm" fw={600}>{i.tenant}</Text><Text size="xs" c="dimmed">{i.reference} · {humanize(i.category)}{i.is_demo ? " · demo" : ""}</Text></Table.Td>
+                        <Table.Td><IncidentStatusBadge status={i.status} /></Table.Td>
+                        <Table.Td><Text size="sm">{fmtRelative(i.last_observed_at)}</Text></Table.Td>
+                      </Table.Tr>
+                    ))}
+                  </Table.Tbody>
+                </Table>
+              </div>
+            )}
+          </Section>
+        </Grid.Col>
+        <Grid.Col span={{ base: 12, lg: 4 }}>
+          <Stack>
+            <Section title="New findings (24h)">
+              {d && <Stack gap={6}>{Object.entries(d.new_findings_24h).map(([s, n]) => <Group key={s} justify="space-between"><SeverityBadge severity={s} /><Text fw={600}>{n as number}</Text></Group>)}</Stack>}
+            </Section>
+            <Section title="Queues">
+              {d && (Object.keys(d.queues).length ? <KeyValue items={Object.entries(d.queues).map(([q, n]) => [q, `${n} waiting`])} /> : <Text size="sm" c="var(--cw-light-text-threat)">Queue depth unavailable (Redis unreachable).</Text>)}
+              {d && <Text size="xs" c="dimmed" mt="xs">Notification failures (24h): {d.notification_failures_24h}</Text>}
+            </Section>
+          </Stack>
+        </Grid.Col>
+      </Grid>
+    </>
+  );
+}
+
+export function ScanQueuePage() {
+  const can = usePlatformCan();
+  const params = new URLSearchParams(window.location.search);
+  const [status, setStatus] = useState<string | null>(params.get("status"));
+  const [type, setType] = useState<string | null>(null);
+  const [page, setPage] = useState(1);
+  const q = useQuery({ queryKey: ["ops-jobs", status, type, page], queryFn: () => api.get<Page<Job>>("/ops/jobs", { status: status ?? undefined, job_type: type ?? undefined, page, page_size: 30 }), refetchInterval: 10_000 });
+  const retry = useMutation({ mutationFn: (id: string) => api.post(`/ops/jobs/${id}/retry`), onSuccess: () => q.refetch(), onError });
+  const cancel = useMutation({ mutationFn: (id: string) => api.post(`/ops/jobs/${id}/cancel`), onSuccess: () => q.refetch(), onError });
+  return (
+    <>
+      <PageHeader title="Scheduler and job queue" description="Scheduled, queued, running and completed monitoring jobs. Overlapping jobs for the same website are prevented by the database." />
+      <Card>
+        <Group mb="md">
+          <Select placeholder="Status" clearable w={150} value={status} onChange={setStatus} aria-label="Status" data={["queued", "running", "succeeded", "partial", "failed", "cancelled"].map((v) => ({ value: v, label: humanize(v) }))} />
+          <Select placeholder="Type" clearable w={190} value={type} onChange={setType} aria-label="Type" data={["file_scan", "availability", "tls", "connection_test"].map((v) => ({ value: v, label: humanize(v) }))} />
+        </Group>
+        <DataTable<Job>
+          rows={q.data?.items}
+          loading={q.isLoading}
+          error={q.error}
+          rowKey={(j) => j.id}
+          page={page}
+          pageSize={30}
+          total={q.data?.total}
+          onPage={setPage}
+          empty={<EmptyState title="No jobs match" />}
+          columns={[
+            { key: "type", header: "Job", render: (j) => <Box><Text size="sm" fw={600}>{humanize(j.job_type)}</Text><Text size="xs" c="dimmed">{j.tenant}</Text></Box> },
+            { key: "status", header: "Status", render: (j) => <ScanBadge status={j.status} /> },
+            { key: "q", header: "Queued", render: (j) => <Text size="sm">{fmtRelative(j.queued_at)}</Text> },
+            { key: "hb", header: "Heartbeat", render: (j) => j.status === "running" ? <Box><Text size="sm">{fmtRelative(j.heartbeat_at)}</Text><Text size="xs" c="dimmed">{scanJobDetail(j)}</Text></Box> : <Text size="sm">—</Text>, visibleFrom: "md" },
+            { key: "att", header: "Attempts", render: (j) => <Text size="sm">{j.attempts}/{j.max_attempts}</Text> },
+            { key: "err", header: "Error", render: (j) => <Tooltip label={j.error_message ?? ""} disabled={!j.error_message}><Text size="xs" c="dimmed" lineClamp={1}>{j.error_class ? humanize(j.error_class) : ""}</Text></Tooltip>, visibleFrom: "sm" },
+            { key: "x", header: "", render: (j) => can("ops:jobs:manage") && (j.status === "failed" || j.status === "partial" || j.status === "cancelled" ? <Button size="xs" variant="subtle" onClick={() => retry.mutate(j.id)}>Retry</Button> : j.status === "queued" || j.status === "running" ? <Button size="xs" variant="subtle" color="threat" onClick={() => cancel.mutate(j.id)}>Cancel</Button> : null) },
+          ]}
+        />
+      </Card>
+    </>
+  );
+}
+
+export function DiagnosticsPage() {
+  const [failingOnly, setFailingOnly] = useState("failing");
+  const [page, setPage] = useState(1);
+  const q = useQuery({ queryKey: ["ops-connections", failingOnly, page], queryFn: () => api.get<Page<any>>("/ops/connections", { failing_only: failingOnly === "failing", page, page_size: 30 }), retry: false });
+  if (q.error) return <ErrorState error={q.error} />;
+  return (
+    <>
+      <PageHeader title="Hosting diagnostics" description="Sanitised connection health across customers: permission failures, expired credentials and unreachable services. Running a live test requires a customer grant." />
+      <Card>
+        <Select mb="md" w={200} value={failingOnly} onChange={(v) => setFailingOnly(v ?? "failing")} data={[{ value: "failing", label: "Failing or untested" }, { value: "all", label: "All connections" }]} aria-label="Filter" />
+        <DataTable
+          rows={q.data?.items}
+          loading={q.isLoading}
+          rowKey={(a) => a.id}
+          page={page}
+          pageSize={30}
+          total={q.data?.total}
+          onPage={setPage}
+          empty={<EmptyState title="All connections healthy" />}
+          columns={[
+            { key: "c", header: "Customer / connection", render: (a) => <Box><Text size="sm" fw={600}>{a.tenant}</Text><Text size="xs" c="dimmed">{a.name} · {humanize(a.connector_type)} · {a.hostname}:{a.port}</Text></Box> },
+            { key: "s", header: "Status", render: (a) => <HealthBadge state={a.status === "connected" ? "healthy" : a.status === "untested" ? "pending" : "failed"} /> },
+            { key: "e", header: "Diagnosis", render: (a) => <Box><Text size="xs" fw={600}>{humanize(a.last_error_code)}</Text><Text size="xs" c="dimmed" lineClamp={2}>{a.last_error_message}</Text></Box> },
+            { key: "t", header: "Last tested", render: (a) => <Text size="sm">{fmtRelative(a.last_tested_at)}</Text>, visibleFrom: "md" },
+            { key: "ok", header: "Last success", render: (a) => <Text size="sm">{fmtRelative(a.last_success_at)}</Text>, visibleFrom: "lg" },
+          ]}
+        />
+      </Card>
+    </>
+  );
+}
+
+export function OpsIncidentsPage({ fixedCategory }: { fixedCategory?: string } = {}) {
+  const can = usePlatformCan();
+  const [severity, setSeverity] = useState<string[]>([]);
+  const [chosenCategory, setCategory] = useState<string | null>(null);
+  const category = fixedCategory ?? chosenCategory;
+  const [page, setPage] = useState(1);
+  const [action, setAction] = useState<{ id: string; ref: string } | null>(null);
+  const [form, setForm] = useState({ action: "", note: "" });
+  const q = useQuery({ queryKey: ["ops-incidents", severity, category, page], queryFn: () => api.get<Page<any>>("/ops/incidents", { severity, category: category ?? undefined, page, page_size: 30 }), retry: false });
+  const record = useMutation({ mutationFn: () => api.post(`/ops/incidents/${action?.id}/actions`, form), onSuccess: () => { setAction(null); setForm({ action: "", note: "" }); notifications.show({ color: "secure", title: "Recorded", message: "Response action added to the incident history." }); }, onError });
+  if (q.error) return <ErrorState error={q.error} />;
+  return (
+    <>
+      {!fixedCategory && <PageHeader title="Global incident oversight" description="Open incidents across customers. Titles and evidence are shown only for customers who granted your team access." />}
+      <Card>
+        <Group mb="md">
+          <MultiSelect placeholder="Severity" w={240} data={["critical", "high", "medium", "low"].map((v) => ({ value: v, label: humanize(v) }))} value={severity} onChange={setSeverity} aria-label="Severity" />
+          {!fixedCategory && <Select placeholder="Category" clearable w={200} data={["malware", "file_integrity", "suspicious_file", "availability", "tls", "connection"].map((v) => ({ value: v, label: humanize(v) }))} value={category} onChange={setCategory} aria-label="Category" />}
+        </Group>
+        <DataTable
+          rows={q.data?.items}
+          loading={q.isLoading}
+          rowKey={(i) => i.id}
+          page={page}
+          pageSize={30}
+          total={q.data?.total}
+          onPage={setPage}
+          empty={<EmptyState title="No open incidents" />}
+          columns={[
+            { key: "s", header: "Severity", render: (i) => <SeverityBadge severity={i.severity} /> },
+            { key: "c", header: "Customer", render: (i) => <Box><Text size="sm" fw={600}>{i.tenant}</Text><Text size="xs" c="dimmed">{i.reference} · {humanize(i.category)}</Text></Box> },
+            { key: "t", header: "Detail", render: (i) => i.has_grant ? <Anchor component={Link} to={`/app/${i.tenant_id}/incidents/${i.id}`} size="sm">{i.title}</Anchor> : <Group gap={4}><IconLock size={14} /><Text size="xs" c="dimmed">Requires customer grant</Text></Group> },
+            { key: "st", header: "Status", render: (i) => <IncidentStatusBadge status={i.status} /> },
+            { key: "o", header: "Last observed", render: (i) => <Text size="sm">{fmtRelative(i.last_observed_at)}</Text>, visibleFrom: "md" },
+            { key: "x", header: "", render: (i) => can("ops:incidents:manage") && <Button size="xs" variant="subtle" onClick={() => setAction({ id: i.id, ref: i.reference })}>Record action</Button> },
+          ]}
+        />
+      </Card>
+      <Modal opened={!!action} onClose={() => setAction(null)} title={`Record response action · ${action?.ref}`}>
+        <Stack>
+          <TextInput label="Action" description={minCharsHint(form.action, 3)} placeholder="e.g. Contacted customer security lead" value={form.action} onChange={(e) => setForm({ ...form, action: e.currentTarget.value })} />
+          <Textarea label="Notes" description={minCharsHint(form.note, 3)} autosize minRows={3} value={form.note} onChange={(e) => setForm({ ...form, note: e.currentTarget.value })} />
+          <Text size="xs" c="dimmed">Recorded as a manual action in the tamper-evident incident history. Actions that change customer systems require recorded customer approval.</Text>
+          <Button onClick={() => record.mutate()} loading={record.isPending} disabled={form.action.trim().length < 3 || form.note.trim().length < 3}>Record</Button>
+        </Stack>
+      </Modal>
+    </>
+  );
+}
+
+export function OpsNotificationsPage() {
+  const [status, setStatus] = useState("failed");
+  const [page, setPage] = useState(1);
+  const q = useQuery({ queryKey: ["ops-notifications", status, page], queryFn: () => api.get<Page<any>>("/ops/notifications", { status, page, page_size: 30 }) });
+  return (
+    <>
+      <PageHeader title="Notification dispatcher" description="Delivery failures, retries and unconfigured channels across customers." />
+      <Card>
+        <Select mb="md" w={180} value={status} onChange={(v) => setStatus(v ?? "failed")} data={["failed", "pending", "unconfigured"].map((v) => ({ value: v, label: humanize(v) }))} aria-label="Status" />
+        <DataTable rows={q.data?.items} loading={q.isLoading} error={q.error} rowKey={(n) => n.id} page={page} pageSize={30} total={q.data?.total} onPage={setPage}
+          empty={<EmptyState title={`No ${status} notifications`} />}
+          columns={[
+            { key: "t", header: "Created", render: (n) => <Text size="sm">{fmtDateTime(n.created_at)}</Text> },
+            { key: "c", header: "Customer", render: (n) => <Text size="sm">{n.tenant ?? "Platform"}</Text> },
+            { key: "ch", header: "Channel", render: (n) => <Text size="sm">{humanize(n.channel)} · {humanize(n.category)}</Text> },
+            { key: "a", header: "Attempts", render: (n) => <Text size="sm">{n.attempts}</Text> },
+            { key: "e", header: "Last error", render: (n) => <Text size="xs" c="dimmed">{n.last_error}</Text> },
+          ]} />
+      </Card>
+    </>
+  );
+}
+
+/** ClamAV + YARA status from the health endpoint. */
+function MalwareScannerSection({ scanner }: { scanner: any }) {
+  if (!scanner) return null;
+  const age = scanner.db_age_hours as number | null | undefined;
+  return (
+    <Section title="Malware scanner" description="ClamAV checks retrieved file contents; YARA rules flag web-shell code for review.">
+      <HealthBadge state={!scanner.ok ? "failed" : !scanner.db_version || (age ?? 0) > 72 || scanner.quarantined_rules?.length ? "degraded" : "healthy"} />
+      {scanner.ok ? (
+        <KeyValue items={[
+          ["Engine", scanner.engine],
+          ["Signatures", scanner.db_version ? `${scanner.db_version} · ${age === null || age === undefined ? "age unknown" : `${Math.round(age)} h old`}` : "No official signature database loaded"],
+          ["YARA rules", scanner.yara_ok ? `version ${scanner.yara_rules_version}` : "Not loaded"],
+          ["Rule self-test", scanner.selftest?.last_run_at
+            ? `${fmtRelative(scanner.selftest.last_run_at)} · ${scanner.quarantined_rules?.length ? `${scanner.quarantined_rules.length} rule(s) quarantined` : "no rule matches genuine WordPress code"}`
+            : "Not run yet (daily, against official releases of the WordPress versions on monitored sites)"],
+        ]} />
+      ) : (
+        <Text size="sm" c="dimmed" mt="xs">{scanner.error} Files are reported as "not scanned", never as clean.</Text>
+      )}
+      {(scanner.quarantined_rules ?? []).map((q: any) => (
+        <Alert key={q.rule} color="amber" mt="sm" icon={<IconAlertTriangle />} title={`Rule quarantined: ${q.rule}`}>
+          <Text size="sm">It matched genuine code in an official release, so its matches are ignored until the rule is fixed (editing the rules ends the quarantine).</Text>
+          {q.examples.map((ex: any) => (
+            <Text key={`${ex.release}:${ex.path}`} size="xs" className="cw-mono" mt={4}>{ex.release} · {ex.path}{ex.excerpt ? ` · “${ex.excerpt}”` : ""}</Text>
+          ))}
+        </Alert>
+      ))}
+    </Section>
+  );
+}
+
+export function OpsMalwarePage() {
+  const health = useQuery({ queryKey: ["ops-health"], queryFn: () => api.get<any>("/ops/health"), refetchInterval: 30_000, retry: false });
+  return (
+    <>
+      <PageHeader title="Malware findings" description="Signature matches (ClamAV, confirmed malware) and YARA code-pattern matches (suspicious, needs review) across customers. CyberWatch never deletes or quarantines files." />
+      {health.data && <Box mb="md"><MalwareScannerSection scanner={health.data.malware_scanner} /></Box>}
+      <OpsIncidentsPage fixedCategory="malware" />
+    </>
+  );
+}
+
+function AlertingSection({ alerting }: { alerting?: any }) {
+  const can = usePlatformCan();
+  const test = useMutation({
+    mutationFn: () => api.post<{ sent: string[]; failed: string[] }>("/admin/platform-alerts/test", {}),
+    onSuccess: (r) => notifications.show({ color: r.failed.length ? "amber" : "secure", title: "Test alert sent",
+      message: `Sent to ${r.sent.length}${r.failed.length ? `; failed: ${r.failed.join(", ")}` : ""}.` }),
+    onError,
+  });
+  if (!alerting) return null;
+  const ok = alerting.active && alerting.smtp_configured && alerting.recipients.length > 0;
+  return (
+    <Section title="Platform alerting" description="Emails staff when anything on this page stays unhealthy for 3 minutes, with reminders and an all-clear.">
+      <HealthBadge state={ok ? "healthy" : "degraded"} tooltip={!alerting.active ? "Runs only in staging/production." : !alerting.smtp_configured ? "SMTP is not configured." : undefined} />
+      <KeyValue items={[
+        ["Recipients", alerting.recipients.length ? alerting.recipients.join(", ") : "Nobody"],
+        ["Last check", alerting.last_evaluated_at ? fmtRelative(alerting.last_evaluated_at) : "Not yet"],
+        ["Open", alerting.open.length ? alerting.open.map((a: any) => `${a.message}${a.last_notified ? " (reported)" : ""}`).join("; ") : "None"],
+      ]} />
+      {can("platform:users:manage") && <Button size="xs" variant="default" mt="xs" onClick={() => test.mutate()} loading={test.isPending}>Send test alert</Button>}
+    </Section>
+  );
+}
+
+export function WorkerHealthPage() {
+  const q = useQuery({ queryKey: ["ops-health"], queryFn: () => api.get<any>("/ops/health"), refetchInterval: 15_000, retry: false });
+  if (q.error) return <ErrorState error={q.error} />;
+  const d = q.data;
+  if (!d) return <LoadingBlock rows={8} />;
+  return (
+    <>
+      <PageHeader title="Worker and infrastructure health" description={`Checked ${fmtRelative(d.checked_at)}.`} />
+      {d.alerts.length > 0 && <Alert color="threat" mb="md" icon={<IconAlertTriangle />} title="Alerts">{d.alerts.map((a: any) => <Text key={a.message} size="sm">[{a.severity}] {a.message}</Text>)}</Alert>}
+      <SimpleGrid cols={{ base: 1, md: 3 }} mb="md">
+        <Section title="Database"><HealthBadge state={d.database.ok ? "healthy" : "failed"} /></Section>
+        <Section title="Redis and queues">
+          <HealthBadge state={d.redis.ok ? "healthy" : "failed"} />
+          <KeyValue items={Object.entries(d.redis.queues ?? {}).map(([k, v]) => [k, `${v} waiting`])} />
+        </Section>
+        <Section title="Scheduler">
+          <HealthBadge state={d.scheduler.ok ? "healthy" : "degraded"} />
+          <KeyValue items={Object.entries(d.scheduler.tasks).map(([k, v]: [string, any]) => [humanize(k), fmtRelative(v.last_run_at)])} />
+        </Section>
+        <Section title="Disk">
+          {d.disk.used_pct !== undefined ? <KeyValue items={[["Used", `${d.disk.used_pct}%`], ["Free", fmtBytes(d.disk.free_bytes)]]} /> : <Text size="sm">Unavailable</Text>}
+        </Section>
+        <MalwareScannerSection scanner={d.malware_scanner} />
+        <Section title="Backups">
+          {d.backup ? <KeyValue items={[["Status", <HealthBadge key="b" state={d.backup.status === "ok" ? "healthy" : "failed"} />], ["Reported", fmtDateTime(d.backup.reported_at)], ["Location", d.backup.location]]} /> : <Text size="sm" c="var(--cw-light-text-amber)">No backup has been reported.</Text>}
+        </Section>
+        <AlertingSection alerting={d.alerting} />
+        <Section title="Job latency and durations (24h)">
+          <KeyValue items={[["Avg queue wait", d.avg_queue_latency_seconds === null ? "—" : `${d.avg_queue_latency_seconds}s`], ...Object.entries(d.avg_duration_seconds_by_type).map(([k, v]: [string, any]) => [humanize(k), `${v.avg}s avg · ${v.count} jobs`] as [string, string])]} />
+          {d.resource_usage?.load_avg && <Text size="xs" c="dimmed" mt="xs">API host load: {d.resource_usage.load_avg.join(" / ")}</Text>}
+        </Section>
+      </SimpleGrid>
+      <Section title="Workers" description="Each worker reports a heartbeat every 20 seconds. Updates start new worker containers; the old ones show as Replaced and are removed after 7 days.">
+        <DataTable rows={d.workers} rowKey={(w: any) => w.name} empty={<EmptyState title="No worker has reported a heartbeat" description="Start the monitoring and notification workers." />}
+          columns={[
+            { key: "n", header: "Worker", render: (w: any) => <Text size="sm" className="cw-mono">{w.name}</Text> },
+            { key: "q", header: "Queues", render: (w: any) => <Group gap={4}>{w.queues.map((q: string) => <Badge key={q} size="xs" variant="outline">{q}</Badge>)}</Group> },
+            {
+              key: "s", header: "State", render: (w: any) => (
+                <HealthBadge state={w.state ?? (w.alive ? "healthy" : "failed")} tooltip={
+                  w.state === "replaced" ? "Stopped; a newer worker (e.g. after an update) serves the same queues. Removed after 7 days."
+                    : w.state === "failed" ? "Stopped, and no running worker serves its queues: those jobs are not being processed." : undefined} />
+              ),
+            },
+            { key: "l", header: "Last heartbeat", render: (w: any) => <Text size="sm">{fmtRelative(w.last_seen_at)}</Text> },
+            { key: "st", header: "Started", render: (w: any) => <Text size="sm">{fmtDateTime(w.started_at)}</Text>, visibleFrom: "md" },
+          ]} />
+      </Section>
+    </>
+  );
+}
+
+/** Honest placeholder views for capabilities that are not active in this release. */
+export function CapabilityNoticePage({ kind }: { kind: "files" | "logs" | "evidence" }) {
+  const content = {
+    files: { title: "File inventory and integrity", icon: IconFileSearch, body: "Customer file inventories, baselines and change history are customer data. Open a customer workspace through an approved managed-service grant to investigate.", link: "/admin/grants", linkLabel: "Request or use a grant" },
+    logs: { title: "Log and attack analysis", icon: IconListDetails, body: "Log analysis is not active. No connection has a verified, implemented log-access capability in this release; CyberWatch does not claim log analysis where logs are unavailable.", link: "/ops/diagnostics", linkLabel: "Review connection capabilities" },
+    evidence: { title: "Evidence store", icon: IconLock, body: "Incident evidence is hashed at collection and stored per customer. Access it from the incident page inside a customer workspace, under an approved grant. Integrity is verified on every view.", link: "/admin/grants", linkLabel: "Managed-service grants" },
+  }[kind];
+  const IconCmp = content.icon;
+  return (
+    <>
+      <PageHeader title={content.title} />
+      <Card>
+        <EmptyState icon={IconCmp} title={kind === "logs" ? "Not available in this release" : "Customer data requires a grant"} description={content.body}
+          action={<Button component={Link} to={content.link} variant="light">{content.linkLabel}</Button>} />
+      </Card>
+    </>
+  );
+}
+
+// ---------------------------------------------------------------- NOC wall
+
+const NOC_STATE: Record<string, { color: string; label: string }> = {
+  down: { color: "threat", label: "Down" },
+  alert: { color: "threat", label: "Incident" },
+  degraded: { color: "amber", label: "Degraded" },
+  unknown: { color: "info", label: "No data yet" },
+  ok: { color: "secure", label: "Operational" },
+  paused: { color: "gray", label: "Paused" },
+};
+
+function NocSiteCard({ s }: { s: any }) {
+  const st = NOC_STATE[s.state] ?? NOC_STATE.unknown;
+  const a = s.availability;
+  const inc = s.open_incidents;
+  return (
+    <Card p="sm" style={{ borderLeft: `5px solid var(--mantine-color-${st.color}-6)` }} aria-label={`${s.name}: ${st.label}`}>
+      <Group justify="space-between" wrap="nowrap" align="flex-start" gap="xs">
+        <Box miw={0}>
+          <Text fw={700} size="sm" truncate>{s.name}</Text>
+          <Text size="xs" c="dimmed" truncate>{s.tenant}{s.is_demo ? " · demo" : ""} · {s.hostname}</Text>
+        </Box>
+        <Badge color={st.color} variant={s.state === "ok" ? "light" : "filled"} style={{ flexShrink: 0 }}>{st.label}</Badge>
+      </Group>
+      {s.state !== "ok" && s.reasons.length > 0 && (
+        <Text size="xs" mt={6} c={s.state === "down" || s.state === "alert" ? "var(--mantine-color-threat-text)" : undefined}>{s.reasons.join(" · ")}</Text>
+      )}
+      <Group gap="md" mt={8} wrap="wrap">
+        <Tooltip label={a.checked_at ? `Last check ${fmtRelative(a.checked_at)}${a.http_status ? ` · HTTP ${a.http_status}` : ""}` : "Not checked yet"}>
+          <Text size="xs"><Text span c="dimmed">Uptime 24h </Text><b>{a.uptime_24h ?? "—"}{a.uptime_24h != null ? "%" : ""}</b></Text>
+        </Tooltip>
+        <Text size="xs"><Text span c="dimmed">Response </Text><b>{a.response_ms != null ? `${a.response_ms} ms` : "—"}</b></Text>
+        <Text size="xs"><Text span c="dimmed">TLS </Text><b>{s.tls.days_left != null ? `${s.tls.days_left}d` : s.tls.status ?? "—"}</b></Text>
+        <Text size="xs"><Text span c="dimmed">Scan </Text><b>{s.file_scan.status ? `${s.file_scan.status} ${fmtRelative(s.file_scan.at)}` : "—"}</b></Text>
+      </Group>
+      <Group gap={6} mt={8}>
+        {s.connection && <Badge size="xs" variant="outline" color={["auth_failed", "error", "disconnected", "expired"].includes(s.connection.status) ? "threat" : s.connection.status === "connected" ? "secure" : "info"}>{humanize(s.connection.connector)} · {humanize(s.connection.status)}</Badge>}
+        {(["critical", "high", "medium", "low"] as const).filter((k) => inc[k]).map((k) => <Badge key={k} size="xs" color={k === "medium" ? "amber" : k === "low" ? "info" : "threat"} variant={k === "critical" ? "filled" : "light"}>{inc[k]} {k}</Badge>)}
+      </Group>
+    </Card>
+  );
+}
+
+export function NocWallPage() {
+  const [demo, setDemo] = useState(false);
+  const [filter, setFilter] = useState<string>("all");
+  const [search, setSearch] = useState("");
+  const q = useQuery({ queryKey: ["ops-noc", demo], queryFn: () => api.get<any>("/ops/noc", { include_demo: demo }), refetchInterval: 15_000 });
+  if (q.error) return <ErrorState error={q.error} onRetry={() => q.refetch()} />;
+  const d = q.data;
+  const term = search.trim().toLowerCase();
+  const sites = (d?.websites ?? []).filter((s: any) =>
+    (filter === "all" || (filter === "problems" ? !["ok", "paused"].includes(s.state) : s.state === filter))
+    && (!term || `${s.name} ${s.tenant} ${s.hostname}`.toLowerCase().includes(term)));
+  const sum = d?.summary ?? {};
+  const inc = d?.open_incidents ?? {};
+  const fullscreen = () => document.documentElement.requestFullscreen?.().catch(() => undefined);
+  return (
+    <>
+      <PageHeader
+        title="NOC wall"
+        description={d ? `Every monitored website and hosting connection, worst first. Updated ${fmtRelative(d.generated_at)}; refreshes every 15 seconds.` : "Loading live status…"}
+        actions={<Group gap="xs"><Button variant="default" size="xs" onClick={fullscreen}>Full screen</Button></Group>}
+      />
+      {d?.platform.alerts.length > 0 && (
+        <Alert color="threat" icon={<IconAlertTriangle />} mb="md" title="Platform alerts">
+          {d.platform.alerts.map((a: any) => <Text size="sm" key={a.message}>[{a.severity}] {a.message}</Text>)}
+        </Alert>
+      )}
+      <SimpleGrid cols={{ base: 2, sm: 3, md: 5, xl: 9 }} mb="md">
+        <StatCard label="Down" tone={sum.down ? "threat" : "secure"} loading={!d} value={sum.down} />
+        <StatCard label="Incident" tone={sum.alert ? "threat" : "secure"} loading={!d} value={sum.alert} />
+        <StatCard label="Degraded" tone={sum.degraded ? "amber" : "secure"} loading={!d} value={sum.degraded} />
+        <StatCard label="Operational" tone="secure" loading={!d} value={sum.ok} />
+        <StatCard label="No data / paused" tone="info" loading={!d} value={d ? (sum.unknown ?? 0) + (sum.paused ?? 0) : undefined} />
+        <StatCard label="Critical + high open" tone={(inc.critical ?? 0) + (inc.high ?? 0) ? "threat" : "secure"} loading={!d} value={d ? (inc.critical ?? 0) + (inc.high ?? 0) : undefined} to="/ops/incidents" />
+        <StatCard label="Failing connections" icon={IconPlugConnectedX} tone={d?.connections_summary.failing ? "amber" : "secure"} loading={!d} value={d ? `${d.connections_summary.failing}/${d.connections_summary.total}` : undefined} />
+        <StatCard label="Service desk overdue" tone={d?.service_desk.overdue ? "threat" : "secure"} loading={!d} value={d?.service_desk.overdue}
+          context={d ? `${d.service_desk.open} open` : undefined} to="/ops/service-desk" />
+        <StatCard label="Workers" icon={IconCpu} tone={d && d.platform.workers_healthy && !d.platform.workers_failed && d.platform.scheduler_ok ? "secure" : "threat"} loading={!d}
+          value={d ? `${d.platform.workers_healthy} ok` : undefined} context={d && !d.platform.scheduler_ok ? "Scheduler stale" : undefined} to="/ops/workers" />
+      </SimpleGrid>
+      <Group mb="sm" gap="sm" wrap="wrap">
+        <Select size="xs" w={190} aria-label="Show" value={filter} onChange={(v) => setFilter(v ?? "all")} allowDeselect={false}
+          data={[{ value: "all", label: "All websites" }, { value: "problems", label: "Problems only" }, ...Object.entries(NOC_STATE).map(([k, v]) => ({ value: k, label: v.label }))]} />
+        <TextInput size="xs" w={240} placeholder="Search site, organisation or host" aria-label="Search" value={search} onChange={(e) => setSearch(e.currentTarget.value)} />
+        <Select size="xs" w={170} aria-label="Demo organisations" value={demo ? "with" : "without"} onChange={(v) => setDemo(v === "with")} allowDeselect={false}
+          data={[{ value: "without", label: "Hide demo data" }, { value: "with", label: "Include demo data" }]} />
+        <Text size="xs" c="dimmed">{d ? `${sites.length} of ${d.websites.length} websites` : ""}</Text>
+      </Group>
+      {!d ? <LoadingBlock /> : sites.length === 0 ? <EmptyState title={d.websites.length ? "Nothing matches this filter" : "No websites are being monitored yet"} /> : (
+        <SimpleGrid cols={{ base: 1, sm: 2, lg: 3, xl: 4 }} mb="lg">
+          {sites.map((s: any) => <NocSiteCard key={s.id} s={s} />)}
+        </SimpleGrid>
+      )}
+      <Section title="Hosting connections" description="Failing connections first. Fix them from the customer's hosting page (requires a grant) or ask the customer.">
+        <DataTable
+          rows={d?.connections}
+          loading={!d}
+          rowKey={(c: any) => c.id}
+          columns={[
+            { key: "n", header: "Connection", render: (c: any) => <Box><Text size="sm" fw={600}>{c.name}</Text><Text size="xs" c="dimmed">{c.tenant} · {c.hostname}</Text></Box> },
+            { key: "t", header: "Type", render: (c: any) => <Text size="sm">{humanize(c.connector)}</Text>, visibleFrom: "sm" },
+            { key: "s", header: "Status", render: (c: any) => <ConnectionBadge status={c.status} /> },
+            { key: "w", header: "Websites", render: (c: any) => <Text size="sm">{c.websites}</Text>, visibleFrom: "md" },
+            { key: "l", header: "Last success", render: (c: any) => <Tooltip label={c.last_error ?? "No error"} disabled={!c.last_error}><Text size="sm">{fmtRelative(c.last_success_at)}</Text></Tooltip>, visibleFrom: "md" },
+          ]}
+        />
+      </Section>
+    </>
+  );
+}
+
+export { DeskTicketPage, ServiceDeskPage } from "./ServiceDesk";

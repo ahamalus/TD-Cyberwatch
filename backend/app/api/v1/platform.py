@@ -1,0 +1,1552 @@
+"""Platform administration (A01–A13) and monitoring operations (M01–M12).
+
+Platform routes never expose customer monitoring content (file paths, hashes,
+evidence) across tenants. Detailed customer data requires a managed-service
+grant and is accessed through the ordinary tenant routes, where it is
+audited with the grant ID.
+"""
+
+from __future__ import annotations
+
+import uuid
+from datetime import datetime, timedelta
+
+from fastapi import APIRouter, Depends, Query
+from pydantic import BaseModel, EmailStr, Field
+from sqlalchemy import func, or_, select, text
+from sqlalchemy.orm import Session
+
+from app.api.deps import PlatformContext, require_platform
+from app.api.v1.monitoring import job_dict
+from app.api.v1.tenants import audit_rows_out, grant_out
+from app.core.errors import Conflict, NotFound, ValidationFailed
+from app.core.permissions import ALL_ROLES, GRANTABLE_TENANT_PERMISSIONS, P
+from app.db.base import utcnow
+from app.models import (
+    AuditEvent,
+    ConnectorDefinition,
+    HostingAccount,
+    Incident,
+    ManagedServiceGrant,
+    Notification,
+    Payment,
+    PaymentDispute,
+    PaymentRefund,
+    Plan,
+    PlatformRoleAssignment,
+    PlatformSetting,
+    RolePermission,
+    ScanJob,
+    Subscription,
+    Tenant,
+    TenantMembership,
+    User,
+    WebhookEvent,
+    Website,
+)
+from app.models.incidents import OPEN_STATUSES, SEVERITIES
+from app.monitoring import jobs
+from app.schemas.common import Message, PageParams, paginate
+from app.services import audit
+from app.services.health import system_health
+
+admin = APIRouter(prefix="/admin", tags=["platform-admin"])
+ops = APIRouter(prefix="/ops", tags=["operations"])
+
+PLATFORM_ROLE_KEYS = {k for k, r in ALL_ROLES.items() if r.scope == "platform"}
+
+
+# ======================================================================
+# Administration
+# ======================================================================
+
+
+@admin.get("/overview")
+def overview(pc: PlatformContext = Depends(require_platform(P.PLATFORM_OVERVIEW))) -> dict:
+    db = pc.db
+    now = utcnow()
+    since = now - timedelta(hours=24)
+    tenants = dict(db.execute(select(Tenant.status, func.count()).where(Tenant.is_demo.is_(False))
+                              .group_by(Tenant.status)).all())
+    subs = dict(db.execute(select(Subscription.status, func.count()).where(Subscription.is_current.is_(True))
+                           .group_by(Subscription.status)).all())
+    month = func.date_trunc(text("'month'"), Payment.paid_at)
+    revenue = db.execute(
+        select(month, Payment.currency, func.sum(Payment.amount_minor), func.count())
+        .where(Payment.status == "success", Payment.verified_at.is_not(None), Payment.paid_at >= now - timedelta(days=186))
+        .group_by(month, Payment.currency)
+        .order_by(month)
+    ).all()
+    return {
+        "tenants": tenants,
+        "demo_tenants": db.execute(select(func.count()).select_from(Tenant).where(Tenant.is_demo.is_(True))).scalar_one(),
+        "users": db.execute(select(func.count()).select_from(User)).scalar_one(),
+        "subscriptions": subs,
+        "websites": db.execute(select(func.count()).select_from(Website)).scalar_one(),
+        "hosting_accounts": dict(db.execute(select(HostingAccount.status, func.count()).group_by(HostingAccount.status)).all()),
+        "jobs_24h": dict(db.execute(select(ScanJob.status, func.count()).where(ScanJob.queued_at >= since)
+                                    .group_by(ScanJob.status)).all()),
+        "open_incidents_by_severity": dict(db.execute(select(Incident.severity, func.count())
+                                                      .where(Incident.status.in_(OPEN_STATUSES)).group_by(Incident.severity)).all()),
+        "notifications_24h": dict(db.execute(select(Notification.status, func.count()).where(Notification.created_at >= since)
+                                             .group_by(Notification.status)).all()),
+        "revenue_verified": [{"month": m.date().isoformat() if m else None, "currency": c, "amount_minor": int(a or 0),
+                              "payments": n} for m, c, a, n in revenue],
+        "health": {k: v for k, v in system_health(db).items() if k in ("database", "redis", "alerts", "scheduler")},
+    }
+
+
+@admin.get("/tenants")
+def list_tenants(pc: PlatformContext = Depends(require_platform(P.PLATFORM_TENANTS_READ)), params: PageParams = Depends(),
+                 q: str | None = Query(None, max_length=200), status: str | None = Query(None, max_length=16)) -> dict:
+    db = pc.db
+    query = select(Tenant)
+    if q:
+        query = query.where(or_(Tenant.name.ilike(f"%{q}%"), Tenant.slug.ilike(f"%{q}%")))
+    if status:
+        query = query.where(Tenant.status == status)
+
+    def row(t: Tenant) -> dict:
+        sub = db.execute(select(Subscription, Plan).join(Plan, Plan.id == Subscription.plan_id).where(
+            Subscription.tenant_id == t.id, Subscription.is_current.is_(True))).first()
+        return {
+            "id": str(t.id), "name": t.name, "slug": t.slug, "status": t.status, "is_demo": t.is_demo,
+            "country": t.country, "created_at": t.created_at, "contact_email": t.contact_email,
+            "plan": sub[1].name if sub else None, "subscription_status": sub[0].status if sub else None,
+            "websites": db.execute(select(func.count()).select_from(Website).where(Website.tenant_id == t.id)).scalar_one(),
+            "hosting_accounts": db.execute(select(func.count()).select_from(HostingAccount).where(HostingAccount.tenant_id == t.id)).scalar_one(),
+            "members": db.execute(select(func.count()).select_from(TenantMembership).where(TenantMembership.tenant_id == t.id)).scalar_one(),
+            "open_incidents": db.execute(select(func.count()).select_from(Incident).where(
+                Incident.tenant_id == t.id, Incident.status.in_(OPEN_STATUSES))).scalar_one(),
+        }
+
+    return paginate(db, query.order_by(Tenant.name), params, row)
+
+
+class TenantStatusIn(BaseModel):
+    status: str = Field(pattern="^(active|suspended|deactivated)$")
+    reason: str = Field(min_length=5, max_length=1000)
+    confirm: bool
+
+
+@admin.post("/tenants/{tenant_id}/status")
+def set_tenant_status(tenant_id: uuid.UUID, body: TenantStatusIn,
+                      pc: PlatformContext = Depends(require_platform(P.PLATFORM_TENANTS_MANAGE))) -> dict:
+    if not body.confirm:
+        raise ValidationFailed("Confirmation is required for this action.")
+    t = pc.db.get(Tenant, tenant_id)
+    if t is None:
+        raise NotFound("Tenant not found.")
+    old = t.status
+    t.status, t.status_reason = body.status, body.reason
+    audit.record(pc.db, "admin.tenant_status_changed", actor=pc.actor(), tenant_id=t.id, target_type="tenant",
+                 target_id=t.id, details={"from": old, "to": body.status, "reason": body.reason})
+    pc.db.commit()
+    return {"id": str(t.id), "status": t.status, "note": "Customer data is retained; monitoring pauses while not active."}
+
+
+class OfflineActivationIn(BaseModel):
+    plan_key: str = Field(min_length=1, max_length=40)
+    months: int = Field(ge=1, le=36)
+    reference: str = Field(min_length=3, max_length=120)
+    note: str | None = Field(default=None, max_length=1000)
+    confirm: bool
+
+
+@admin.post("/tenants/{tenant_id}/subscription")
+def activate_subscription(tenant_id: uuid.UUID, body: OfflineActivationIn,
+                          pc: PlatformContext = Depends(require_platform(P.PLATFORM_TENANTS_MANAGE))) -> dict:
+    """Record a plan paid outside online checkout (invoice, bank transfer) and activate it."""
+    if not body.confirm:
+        raise ValidationFailed("Confirmation is required for this action.")
+    from app.services.billing import activate_offline
+
+    sub = activate_offline(pc.db, tenant_id, body.plan_key, body.months, body.reference.strip(),
+                           (body.note or "").strip() or None, pc.actor())
+    pc.db.commit()
+    return {"subscription_id": str(sub.id), "plan": body.plan_key, "status": sub.status,
+            "current_period_end": sub.current_period_end}
+
+
+# ---------------------------------------------------------------- staff & roles
+
+
+@admin.get("/roles")
+def roles(pc: PlatformContext = Depends(require_platform(P.PLATFORM_OVERVIEW))) -> list[dict]:
+    perms: dict[str, list[str]] = {}
+    for rk, code in pc.db.execute(select(RolePermission.role_key, RolePermission.permission_code)).all():
+        perms.setdefault(rk, []).append(code)
+    return [{"key": r.key, "name": r.name, "scope": r.scope, "description": r.description,
+             "permissions": sorted(perms.get(r.key, []))} for r in ALL_ROLES.values()]
+
+
+@admin.get("/staff")
+def list_staff(pc: PlatformContext = Depends(require_platform(P.PLATFORM_USERS_MANAGE))) -> list[dict]:
+    rows = pc.db.execute(select(User).where(User.is_platform_staff.is_(True)).order_by(User.full_name)).scalars()
+    return [{"id": str(u.id), "email": u.email, "full_name": u.full_name, "is_active": u.is_active,
+             "mfa_enabled": u.mfa_enabled, "roles": sorted(a.role_key for a in u.platform_roles),
+             "last_login_at": u.last_login_at} for u in rows]
+
+
+class StaffIn(BaseModel):
+    email: EmailStr
+    full_name: str = Field(min_length=1, max_length=200)
+    roles: list[str] = Field(min_length=1)
+
+
+@admin.post("/staff", status_code=201)
+def create_staff(body: StaffIn, pc: PlatformContext = Depends(require_platform(P.PLATFORM_USERS_MANAGE))) -> dict:
+    from app.core.config import get_settings
+    from app.services.auth import create_email_token
+    from app.services.notifications import queue_simple
+
+    db = pc.db
+    if set(body.roles) - PLATFORM_ROLE_KEYS:
+        raise ValidationFailed("Unknown platform role.")
+    email = body.email.lower()
+    if db.execute(select(User.id).where(User.email == email)).first():
+        raise Conflict("A user with this email already exists.")
+    u = User(email=email, full_name=body.full_name, is_platform_staff=True)
+    db.add(u)
+    db.flush()
+    for r in body.roles:
+        db.add(PlatformRoleAssignment(user_id=u.id, role_key=r, granted_by=pc.principal.user.id))
+    token = create_email_token(db, u, "password_reset")
+    s = get_settings()
+    queue_simple(db, tenant_id=None, channel="email", recipient=email, category="account",
+                 subject=f"Your {s.product_name} staff account",
+                 body=f"An administrator created a staff account for you. Set your password: "
+                      f"{s.public_base_url}/reset-password?token={token}\n\nYou must enrol multi-factor authentication "
+                      "before platform functions become available.",
+                 idempotency_key=f"staff-invite:{u.id}")
+    audit.record(db, "admin.staff_created", actor=pc.actor(), target_type="user", target_id=u.id,
+                 details={"email": email, "roles": body.roles})
+    db.commit()
+    return {"id": str(u.id)}
+
+
+class RolesIn(BaseModel):
+    roles: list[str]
+
+
+@admin.put("/staff/{user_id}/roles")
+def set_staff_roles(user_id: uuid.UUID, body: RolesIn,
+                    pc: PlatformContext = Depends(require_platform(P.PLATFORM_USERS_MANAGE))) -> dict:
+    db = pc.db
+    if set(body.roles) - PLATFORM_ROLE_KEYS:
+        raise ValidationFailed("Unknown platform role.")
+    if user_id == pc.principal.user.id:
+        raise ValidationFailed("You cannot change your own platform roles.")
+    u = db.get(User, user_id)
+    if u is None or not u.is_platform_staff:
+        raise NotFound("Staff member not found.")
+    before = sorted(a.role_key for a in u.platform_roles)
+    u.platform_roles.clear()
+    db.flush()
+    for r in body.roles:
+        u.platform_roles.append(PlatformRoleAssignment(user_id=u.id, role_key=r, granted_by=pc.principal.user.id))
+    audit.record(db, "admin.staff_roles_changed", actor=pc.actor(), target_type="user", target_id=u.id,
+                 details={"before": before, "after": sorted(body.roles)})
+    db.commit()
+    return {"id": str(u.id), "roles": sorted(body.roles)}
+
+
+class StaffStatusIn(BaseModel):
+    is_active: bool
+
+
+def _staff(db: Session, user_id: uuid.UUID) -> User:
+    u = db.get(User, user_id)
+    if u is None or not u.is_platform_staff:
+        raise NotFound("Staff member not found.")
+    return u
+
+
+@admin.put("/staff/{user_id}/status")
+def set_staff_status(user_id: uuid.UUID, body: StaffStatusIn,
+                     pc: PlatformContext = Depends(require_platform(P.PLATFORM_USERS_MANAGE))) -> dict:
+    """Disable (or re-enable) a staff account. Disabling signs it out everywhere at once."""
+    from app.services.auth import revoke_user_sessions
+
+    db = pc.db
+    if user_id == pc.principal.user.id:
+        raise ValidationFailed("You cannot disable your own account.")
+    u = _staff(db, user_id)
+    if not body.is_active and any(a.role_key == "platform_admin" for a in u.platform_roles):
+        admins = db.execute(select(func.count()).select_from(User).join(PlatformRoleAssignment, PlatformRoleAssignment.user_id == User.id)
+                            .where(PlatformRoleAssignment.role_key == "platform_admin", User.is_active.is_(True))).scalar_one()
+        if admins <= 1:
+            raise ValidationFailed("This is the last active platform administrator.")
+    u.is_active = body.is_active
+    revoked = 0 if body.is_active else revoke_user_sessions(db, u.id)
+    audit.record(db, "admin.staff_enabled" if body.is_active else "admin.staff_disabled", actor=pc.actor(),
+                 target_type="user", target_id=u.id, details={"email": u.email, "sessions_revoked": revoked})
+    db.commit()
+    return {"id": str(u.id), "is_active": u.is_active}
+
+
+@admin.post("/staff/{user_id}/resend-invite")
+def resend_staff_invite(user_id: uuid.UUID, pc: PlatformContext = Depends(require_platform(P.PLATFORM_USERS_MANAGE))) -> Message:
+    from app.core.config import get_settings
+    from app.services.auth import create_email_token
+    from app.services.notifications import queue_simple
+
+    db = pc.db
+    u = _staff(db, user_id)
+    if not u.is_active:
+        raise ValidationFailed("Re-enable the account first.")
+    if u.last_login_at is not None:
+        raise ValidationFailed("This person has already signed in; they can use 'Forgot password' instead.")
+    token = create_email_token(db, u, "password_reset")
+    s = get_settings()
+    queue_simple(db, tenant_id=None, channel="email", recipient=u.email, category="account",
+                 subject=f"Your {s.product_name} staff account",
+                 body=f"An administrator created a staff account for you. Set your password: "
+                      f"{s.public_base_url}/reset-password?token={token}\n\nYou must enrol multi-factor authentication "
+                      "before platform functions become available.",
+                 idempotency_key=f"staff-invite:{u.id}:{utcnow().timestamp():.0f}")
+    audit.record(db, "admin.staff_invite_resent", actor=pc.actor(), target_type="user", target_id=u.id,
+                 details={"email": u.email})
+    db.commit()
+    return Message(message="Invitation email queued.")
+
+
+# ---------------------------------------------------------------- connectors
+
+
+@admin.get("/connectors")
+def admin_connectors(pc: PlatformContext = Depends(require_platform(P.PLATFORM_OVERVIEW))) -> list[dict]:
+    db = pc.db
+    since = utcnow() - timedelta(days=7)
+    stats = {(c, s): n for c, s, n in db.execute(
+        select(HostingAccount.connector_type, ScanJob.status, func.count())
+        .join(HostingAccount, HostingAccount.id == ScanJob.hosting_account_id)
+        .where(ScanJob.queued_at >= since).group_by(HostingAccount.connector_type, ScanJob.status)).all()}
+    out = []
+    for c in db.execute(select(ConnectorDefinition).order_by(ConnectorDefinition.key)).scalars():
+        accounts = dict(db.execute(select(HostingAccount.status, func.count()).where(
+            HostingAccount.connector_type == c.key).group_by(HostingAccount.status)).all())
+        ok = stats.get((c.key, "succeeded"), 0)
+        failed = stats.get((c.key, "failed"), 0)
+        out.append({"key": c.key, "name": c.name, "status": c.status, "adapter_version": c.adapter_version,
+                    "description": c.description, "connect_timeout_seconds": c.connect_timeout_seconds,
+                    "io_timeout_seconds": c.io_timeout_seconds, "max_retries": c.max_retries,
+                    "min_poll_interval_minutes": c.min_poll_interval_minutes,
+                    "max_concurrency_per_host": c.max_concurrency_per_host, "notes": c.capability_notes,
+                    "accounts_by_status": accounts,
+                    "job_error_rate_7d": round(failed / (ok + failed), 3) if (ok + failed) else None})
+    return out
+
+
+class ConnectorPatch(BaseModel):
+    status: str | None = Field(default=None, pattern="^(implemented|disabled)$")
+    connect_timeout_seconds: float | None = Field(default=None, ge=2, le=120)
+    io_timeout_seconds: float | None = Field(default=None, ge=5, le=600)
+    max_retries: int | None = Field(default=None, ge=0, le=10)
+    min_poll_interval_minutes: int | None = Field(default=None, ge=1, le=10080)
+    max_concurrency_per_host: int | None = Field(default=None, ge=1, le=20)
+
+
+@admin.patch("/connectors/{key}")
+def patch_connector(key: str, body: ConnectorPatch,
+                    pc: PlatformContext = Depends(require_platform(P.PLATFORM_CONNECTORS_MANAGE))) -> dict:
+    from app.connectors.registry import is_implemented
+
+    c = pc.db.get(ConnectorDefinition, key)
+    if c is None:
+        raise NotFound("Connector not found.")
+    changes = body.model_dump(exclude_none=True)
+    if changes.get("status") == "implemented" and not is_implemented(key):
+        raise ValidationFailed("This connector has no implementation and cannot be enabled.")
+    for k, v in changes.items():
+        setattr(c, k, v)
+    audit.record(pc.db, "admin.connector_updated", actor=pc.actor(), target_type="connector", target_id=key,
+                 details=changes)
+    pc.db.commit()
+    return {"key": c.key, **changes}
+
+
+# ---------------------------------------------------------------- plans
+
+
+class PlanIn(BaseModel):
+    key: str = Field(pattern="^[a-z0-9_]{2,40}$")
+    name: str = Field(min_length=2, max_length=80)
+    description: str = Field(default="", max_length=2000)
+    currency: str = Field(default="NGN", pattern="^[A-Z]{3}$")
+    price_monthly_minor: int | None = Field(default=None, ge=0)
+    price_annual_minor: int | None = Field(default=None, ge=0)
+    entitlements: dict
+    is_public: bool = True
+    is_active: bool = True
+    sort_order: int = 0
+    contact_sales: bool = False
+
+
+REQUIRED_ENTITLEMENTS = {"max_websites", "max_hosting_accounts", "max_users", "min_file_scan_interval_minutes",
+                         "min_availability_interval_minutes", "retention_days", "notifications_per_month"}
+
+
+@admin.get("/plans")
+def admin_plans(pc: PlatformContext = Depends(require_platform(P.PLATFORM_PLANS_MANAGE))) -> list[dict]:
+    rows = pc.db.execute(select(Plan).order_by(Plan.sort_order)).scalars()
+    return [{"id": str(p.id), "key": p.key, "name": p.name, "description": p.description, "currency": p.currency,
+             "price_monthly_minor": p.price_monthly_minor, "price_annual_minor": p.price_annual_minor,
+             "entitlements": p.entitlements, "is_public": p.is_public, "is_active": p.is_active,
+             "sort_order": p.sort_order, "contact_sales": p.contact_sales,
+             "subscribers": pc.db.execute(select(func.count()).select_from(Subscription).where(
+                 Subscription.plan_id == p.id, Subscription.is_current.is_(True))).scalar_one()} for p in rows]
+
+
+@admin.put("/plans/{key}")
+def upsert_plan(key: str, body: PlanIn, pc: PlatformContext = Depends(require_platform(P.PLATFORM_PLANS_MANAGE))) -> dict:
+    if body.key != key:
+        raise ValidationFailed("Plan key mismatch.")
+    missing = REQUIRED_ENTITLEMENTS - set(body.entitlements)
+    if missing:
+        raise ValidationFailed("Missing entitlement values.", details=sorted(missing))
+    for k in REQUIRED_ENTITLEMENTS:
+        if not isinstance(body.entitlements[k], int) or body.entitlements[k] < 0:
+            raise ValidationFailed(f"Entitlement {k} must be a non-negative integer.")
+    p = pc.db.execute(select(Plan).where(Plan.key == key)).scalar_one_or_none()
+    before = None
+    if p is None:
+        p = Plan(**body.model_dump())
+        pc.db.add(p)
+    else:
+        before = {"price_monthly_minor": p.price_monthly_minor, "price_annual_minor": p.price_annual_minor,
+                  "entitlements": p.entitlements, "is_active": p.is_active}
+        for k, v in body.model_dump().items():
+            setattr(p, k, v)
+    audit.record(pc.db, "admin.plan_saved", actor=pc.actor(), target_type="plan", target_id=key,
+                 details={"before": before, "after": body.model_dump()})
+    pc.db.commit()
+    return {"key": key}
+
+
+# ---------------------------------------------------------------- payments
+
+
+@admin.get("/payments")
+def admin_payments(pc: PlatformContext = Depends(require_platform(P.PLATFORM_PAYMENTS_READ)), params: PageParams = Depends(),
+                   status: str | None = Query(None, max_length=16)) -> dict:
+    db = pc.db
+    q = select(Payment)
+    if status:
+        q = q.where(Payment.status == status)
+    names = dict(db.execute(select(Tenant.id, Tenant.name)).all())
+    disputed = set(db.execute(select(PaymentDispute.payment_id).where(PaymentDispute.resolved_at.is_(None),
+                                                                      PaymentDispute.payment_id.is_not(None))).scalars())
+    return paginate(db, q.order_by(Payment.created_at.desc()), params, lambda p: {
+        "id": str(p.id), "tenant": names.get(p.tenant_id), "tenant_id": str(p.tenant_id), "reference": p.reference,
+        "amount_minor": p.amount_minor, "currency": p.currency, "status": p.status, "purpose": p.purpose,
+        "verified_at": p.verified_at, "paid_at": p.paid_at, "channel": p.channel,
+        "gateway_response": p.gateway_response, "created_at": p.created_at,
+        "reconciled": p.status in ("success", "refunded") and p.verified_at is not None
+        and p.verification.get("amount") == p.amount_minor,
+        "refunded_minor": p.refunded_minor,
+        "open_dispute": p.id in disputed,
+    })
+
+
+@admin.get("/webhooks")
+def admin_webhooks(pc: PlatformContext = Depends(require_platform(P.PLATFORM_PAYMENTS_READ)),
+                   params: PageParams = Depends()) -> dict:
+    q = select(WebhookEvent).order_by(WebhookEvent.received_at.desc())
+    return paginate(pc.db, q, params, lambda w: {
+        "id": str(w.id), "provider": w.provider, "event_type": w.event_type, "status": w.status,
+        "signature_valid": w.signature_valid, "received_at": w.received_at, "processed_at": w.processed_at,
+        "error": w.error})
+
+
+@admin.post("/payments/{payment_id}/reverify")
+def reverify_payment(payment_id: uuid.UUID,
+                     pc: PlatformContext = Depends(require_platform(P.PLATFORM_PAYMENTS_MANAGE))) -> dict:
+    from app.services import billing
+
+    p = pc.db.get(Payment, payment_id)
+    if p is None:
+        raise NotFound("Payment not found.")
+    p = billing.verify_reference(pc.db, p.tenant_id, p.reference, pc.actor())
+    pc.db.commit()
+    return {"status": p.status, "verified_at": p.verified_at}
+
+
+class RefundIn(BaseModel):
+    amount_minor: int | None = Field(default=None, ge=1, description="Omit for the full remaining amount.")
+    reason: str = Field(min_length=10, max_length=1000)
+    end_subscription: bool = False
+
+
+def _refund_dict(r: PaymentRefund) -> dict:
+    return {"id": str(r.id), "payment_id": str(r.payment_id), "amount_minor": r.amount_minor, "currency": r.currency,
+            "status": r.status, "reason": r.reason, "end_subscription": r.end_subscription,
+            "provider_refund_id": r.provider_refund_id, "detail": r.detail, "created_at": r.created_at,
+            "processed_at": r.processed_at}
+
+
+@admin.get("/payments/{payment_id}/refunds")
+def payment_refunds(payment_id: uuid.UUID,
+                    pc: PlatformContext = Depends(require_platform(P.PLATFORM_PAYMENTS_READ))) -> dict:
+    from app.services import refunds
+
+    p = pc.db.get(Payment, payment_id)
+    if p is None:
+        raise NotFound("Payment not found.")
+    rows = pc.db.execute(select(PaymentRefund).where(PaymentRefund.payment_id == p.id)
+                         .order_by(PaymentRefund.created_at.desc())).scalars().all()
+    return {"refundable_minor": refunds.refundable_minor(pc.db, p), "items": [_refund_dict(r) for r in rows]}
+
+
+@admin.post("/payments/{payment_id}/refund")
+def refund_payment(payment_id: uuid.UUID, body: RefundIn,
+                   pc: PlatformContext = Depends(require_platform(P.PLATFORM_PAYMENTS_MANAGE))) -> dict:
+    from app.services import refunds
+
+    r = refunds.request_refund(pc.db, payment_id, body.amount_minor, body.reason, body.end_subscription, pc.actor())
+    pc.db.commit()
+    return _refund_dict(r)
+
+
+@admin.post("/refunds/{refund_id}/refresh")
+def refresh_refund(refund_id: uuid.UUID,
+                   pc: PlatformContext = Depends(require_platform(P.PLATFORM_PAYMENTS_MANAGE))) -> dict:
+    from app.services import refunds
+    from app.services.billing import PaystackError
+
+    r = pc.db.get(PaymentRefund, refund_id)
+    if r is None:
+        raise NotFound("Refund not found.")
+    try:
+        refunds.refresh_refund(pc.db, r)
+    except PaystackError as exc:
+        raise ValidationFailed(f"Paystack did not confirm the refund status: {exc}") from exc
+    pc.db.commit()
+    return _refund_dict(r)
+
+
+@admin.get("/disputes")
+def disputes(pc: PlatformContext = Depends(require_platform(P.PLATFORM_PAYMENTS_READ)), params: PageParams = Depends(),
+             open_only: bool = True) -> dict:
+    names = dict(pc.db.execute(select(Tenant.id, Tenant.name)).all())
+    q = select(PaymentDispute)
+    if open_only:
+        q = q.where(PaymentDispute.resolved_at.is_(None))
+    return paginate(pc.db, q.order_by(PaymentDispute.due_at.asc().nulls_last(), PaymentDispute.created_at.desc()),
+                    params, lambda d: {
+        "id": str(d.id), "tenant": names.get(d.tenant_id), "payment_id": str(d.payment_id) if d.payment_id else None,
+        "reference": d.transaction_reference, "status": d.status, "resolution": d.resolution, "category": d.category,
+        "amount_minor": d.amount_minor, "currency": d.currency, "due_at": d.due_at, "resolved_at": d.resolved_at,
+        "verified_with_provider": d.verified_with_provider, "created_at": d.created_at})
+
+
+# ---------------------------------------------------------------- audit
+
+
+@admin.get("/audit")
+def admin_audit(pc: PlatformContext = Depends(require_platform(P.PLATFORM_AUDIT_READ)), params: PageParams = Depends(),
+                action: str | None = Query(None, max_length=80), category: str | None = Query(None, max_length=24),
+                tenant_id: uuid.UUID | None = None, actor_user_id: uuid.UUID | None = None,
+                outcome: str | None = Query(None, max_length=12), since: datetime | None = None) -> dict:
+    q = select(AuditEvent)
+    if action:
+        q = q.where(AuditEvent.action.ilike(f"{action}%"))
+    if category:
+        q = q.where(AuditEvent.category == category)
+    if tenant_id:
+        q = q.where(AuditEvent.tenant_id == tenant_id)
+    if actor_user_id:
+        q = q.where(AuditEvent.actor_user_id == actor_user_id)
+    if outcome:
+        q = q.where(AuditEvent.outcome == outcome)
+    if since:
+        q = q.where(AuditEvent.occurred_at >= since)
+    page = paginate(pc.db, q.order_by(AuditEvent.seq.desc()), params)
+    page["items"] = audit_rows_out(pc.db, page["items"])
+    return page
+
+
+@admin.get("/audit/verify")
+def verify_audit(pc: PlatformContext = Depends(require_platform(P.PLATFORM_AUDIT_READ))) -> dict:
+    res = audit.verify_chain(pc.db)
+    return {"valid": res.valid, "events_checked": res.events_checked, "first_invalid_seq": res.first_invalid_seq,
+            "reason": res.reason}
+
+
+# ---------------------------------------------------------------- settings, health, messaging
+
+
+SETTING_KEYS = {
+    "retention_policy": "Default retention and cleanup policy.",
+    "feature_flags": "Feature flags (JSON object of booleans).",
+    "rate_limits": "Override rate limits.",
+    "security": "Security settings (e.g. session lifetimes) — informational; env settings take precedence.",
+    "job_scheduling": "Scheduler configuration.",
+    "whatsapp_templates": "Approved WhatsApp template names per message type.",
+    "backup_status": "Reported by the backup job.",
+}
+
+
+@admin.get("/settings")
+def get_settings_api(pc: PlatformContext = Depends(require_platform(P.PLATFORM_CONFIG_MANAGE))) -> dict:
+    from app.core.config import get_settings
+
+    s = get_settings()
+    rows = {r.key: {"value": r.value, "updated_at": r.updated_at} for r in pc.db.execute(select(PlatformSetting)).scalars()}
+    return {
+        "editable": {k: {"description": d, **rows.get(k, {"value": None})} for k, d in SETTING_KEYS.items()},
+        "environment": {
+            "environment": s.environment, "session_ttl_minutes": s.session_ttl_minutes,
+            "session_idle_minutes": s.session_idle_minutes, "require_platform_mfa": s.require_platform_mfa,
+            "tenant_max_concurrent_jobs": s.tenant_max_concurrent_jobs, "job_max_attempts": s.job_max_attempts,
+            "scan_max_file_bytes": s.scan_max_file_bytes, "scan_max_total_bytes": s.scan_max_total_bytes,
+            "scan_max_files": s.scan_max_files, "trial_days": s.trial_days, "grace_period_days": s.grace_period_days,
+            "allowed_sftp_ports": s.allowed_sftp_ports, "allowed_cpanel_ports": s.allowed_cpanel_ports,
+            "allowed_http_ports": s.allowed_http_ports,
+            "outbound_private_overrides": bool(s.outbound_allow_cidrs),
+        },
+    }
+
+
+class SettingIn(BaseModel):
+    value: dict
+
+
+@admin.put("/settings/{key}")
+def put_setting(key: str, body: SettingIn, pc: PlatformContext = Depends(require_platform(P.PLATFORM_CONFIG_MANAGE))) -> dict:
+    if key not in SETTING_KEYS or key == "backup_status":
+        raise ValidationFailed("Unknown or read-only setting.")
+    row = pc.db.get(PlatformSetting, key)
+    before = row.value if row else None
+    if row is None:
+        row = PlatformSetting(key=key, value=body.value, description=SETTING_KEYS[key])
+        pc.db.add(row)
+    row.value, row.updated_by, row.updated_at = body.value, pc.principal.user.id, utcnow()
+    audit.record(pc.db, "admin.setting_changed", actor=pc.actor(), target_type="setting", target_id=key,
+                 details={"before": before, "after": body.value})
+    pc.db.commit()
+    return {"key": key, "value": row.value}
+
+
+@admin.get("/health")
+def admin_health(pc: PlatformContext = Depends(require_platform(P.PLATFORM_HEALTH_READ))) -> dict:
+    return system_health(pc.db)
+
+
+@admin.get("/messaging")
+def messaging(pc: PlatformContext = Depends(require_platform(P.PLATFORM_MESSAGING_MANAGE)), params: PageParams = Depends(),
+              status: str = Query("failed", pattern="^(failed|pending|unconfigured|suppressed|sent)$")) -> dict:
+    from app.services.notifications import WHATSAPP_TEMPLATES, channel_status
+
+    db = pc.db
+    names = dict(db.execute(select(Tenant.id, Tenant.name)).all())
+    page = paginate(db, select(Notification).where(Notification.status == status).order_by(Notification.created_at.desc()),
+                    params, lambda n: {"id": str(n.id), "tenant": names.get(n.tenant_id), "channel": n.channel,
+                                       "category": n.category, "status": n.status, "attempts": n.attempts,
+                                       "last_error": n.last_error, "created_at": n.created_at,
+                                       "next_attempt_at": n.next_attempt_at, "delivery_status": n.delivery_status})
+    page["channels"] = channel_status()
+    page["whatsapp_templates"] = {k: {"name": v[0], "language": v[1], "params": v[2]} for k, v in WHATSAPP_TEMPLATES.items()}
+    return page
+
+
+@admin.post("/notifications/{notification_id}/retry", response_model=Message)
+def retry_notification(notification_id: uuid.UUID,
+                       pc: PlatformContext = Depends(require_platform(P.PLATFORM_MESSAGING_MANAGE))) -> Message:
+    n = pc.db.get(Notification, notification_id)
+    if n is None:
+        raise NotFound("Notification not found.")
+    if n.status not in ("failed", "unconfigured"):
+        raise ValidationFailed("Only failed or unconfigured notifications can be retried.")
+    n.status, n.next_attempt_at, n.max_attempts = "pending", utcnow(), n.attempts + 3
+    audit.record(pc.db, "admin.notification_retried", actor=pc.actor(), tenant_id=n.tenant_id,
+                 target_type="notification", target_id=n.id)
+    pc.db.commit()
+    return Message(message="Notification re-queued.")
+
+
+@admin.get("/analytics")
+def analytics(pc: PlatformContext = Depends(require_platform(P.PLATFORM_OVERVIEW)), days: int = Query(30, ge=1, le=180)) -> dict:
+    db = pc.db
+    since = utcnow() - timedelta(days=days)
+    d = func.date_trunc(text("'day'"), ScanJob.queued_at)
+    scans = db.execute(select(d, ScanJob.job_type, ScanJob.status, func.count(),
+                              func.avg(func.extract("epoch", ScanJob.finished_at - ScanJob.started_at)))
+                       .where(ScanJob.queued_at >= since).group_by(d, ScanJob.job_type, ScanJob.status).order_by(d)).all()
+    di = func.date_trunc(text("'day'"), Incident.first_detected_at)
+    incidents = db.execute(select(di, Incident.severity, func.count()).where(Incident.first_detected_at >= since)
+                           .group_by(di, Incident.severity).order_by(di)).all()
+    dn = func.date_trunc(text("'day'"), Notification.created_at)
+    notifs = db.execute(select(dn, Notification.channel, Notification.status, func.count())
+                        .where(Notification.created_at >= since).group_by(dn, Notification.channel, Notification.status)
+                        .order_by(dn)).all()
+    usage = []
+    for t, plan in db.execute(select(Tenant, Plan).join(Subscription, Subscription.tenant_id == Tenant.id)
+                              .join(Plan, Plan.id == Subscription.plan_id).where(Subscription.is_current.is_(True))).all():
+        sites = db.execute(select(func.count()).select_from(Website).where(Website.tenant_id == t.id)).scalar_one()
+        usage.append({"tenant": t.name, "plan": plan.name, "websites": sites,
+                      "limit": plan.entitlements.get("max_websites"),
+                      "over_limit": sites > int(plan.entitlements.get("max_websites", 0))})
+    return {
+        "scans": [{"day": a.date().isoformat(), "job_type": b, "status": c, "count": n, "avg_seconds": round(float(s or 0), 1)}
+                  for a, b, c, n, s in scans],
+        "incidents": [{"day": a.date().isoformat(), "severity": b, "count": n} for a, b, n in incidents],
+        "notifications": [{"day": a.date().isoformat(), "channel": b, "status": c, "count": n} for a, b, c, n in notifs],
+        "tenant_usage": usage,
+    }
+
+
+# ---------------------------------------------------------------- managed-service grants
+
+
+class GrantRequestIn(BaseModel):
+    tenant_id: uuid.UUID
+    grantee_user_id: uuid.UUID | None = None
+    permissions: list[str] = Field(min_length=1)
+    reason: str = Field(min_length=10, max_length=2000)
+    duration_hours: int = Field(default=72, ge=1, le=24 * 90)
+    customer_approval_reference: str | None = Field(default=None, max_length=200)
+
+
+@admin.get("/grants")
+def admin_grants(pc: PlatformContext = Depends(require_platform()), status: str | None = Query(None, max_length=16)) -> list[dict]:
+    q = select(ManagedServiceGrant).order_by(ManagedServiceGrant.created_at.desc()).limit(200)
+    if P.GRANTS_ISSUE not in pc.principal.platform_permissions:
+        q = q.where(ManagedServiceGrant.grantee_user_id == pc.principal.user.id)
+    if status:
+        q = q.where(ManagedServiceGrant.status == status)
+    names = dict(pc.db.execute(select(Tenant.id, Tenant.name)).all())
+    return [{**grant_out(pc.db, g).model_dump(mode="json"), "tenant_id": str(g.tenant_id),
+             "tenant_name": names.get(g.tenant_id)} for g in pc.db.execute(q).scalars()]
+
+
+@admin.post("/grants", status_code=201)
+def request_grant(body: GrantRequestIn, pc: PlatformContext = Depends(require_platform())) -> dict:
+    perms = pc.principal.platform_permissions
+    if not ({P.GRANTS_REQUEST, P.GRANTS_ISSUE} & perms):
+        raise ValidationFailed("You cannot request managed-service access.")
+    grantee = body.grantee_user_id or pc.principal.user.id
+    if grantee != pc.principal.user.id and P.GRANTS_ISSUE not in perms:
+        raise ValidationFailed("You can only request access for yourself.")
+    u = pc.db.get(User, grantee)
+    if u is None or not u.is_platform_staff:
+        raise ValidationFailed("Grantee must be a Trust Data staff member.")
+    if pc.db.get(Tenant, body.tenant_id) is None:
+        raise NotFound("Tenant not found.")
+    bad = set(body.permissions) - GRANTABLE_TENANT_PERMISSIONS
+    if bad:
+        raise ValidationFailed("Some permissions cannot be granted to staff.", details=sorted(bad))
+    now = utcnow()
+    g = ManagedServiceGrant(tenant_id=body.tenant_id, grantee_user_id=grantee, permissions=sorted(set(body.permissions)),
+                            reason=body.reason, requested_by=pc.principal.user.id,
+                            expires_at=now + timedelta(hours=body.duration_hours), status="requested")
+    # A platform administrator may activate a grant directly only by recording
+    # the customer's out-of-band approval (e.g. a signed managed-service order).
+    if body.customer_approval_reference and P.GRANTS_ISSUE in perms:
+        if grantee == pc.principal.user.id:
+            raise ValidationFailed("Administrators cannot issue a grant to themselves; ask another administrator.")
+        g.status, g.approved_by, g.approved_at, g.starts_at = "active", pc.principal.user.id, now, now
+        g.customer_approval_reference = body.customer_approval_reference
+    pc.db.add(g)
+    pc.db.flush()
+    audit.record(pc.db, "grant.issued" if g.status == "active" else "grant.requested", actor=pc.actor(),
+                 tenant_id=body.tenant_id, target_type="grant", target_id=g.id,
+                 details={"grantee": str(grantee), "permissions": g.permissions, "reason": body.reason,
+                          "customer_approval_reference": body.customer_approval_reference})
+    pc.db.commit()
+    return {"id": str(g.id), "status": g.status, "expires_at": g.expires_at}
+
+
+# ======================================================================
+# Monitoring operations
+# ======================================================================
+
+
+@ops.get("/overview")
+def ops_overview(pc: PlatformContext = Depends(require_platform(P.OPS_JOBS_READ))) -> dict:
+    db = pc.db
+    now = utcnow()
+    since = now - timedelta(hours=24)
+    names = dict(db.execute(select(Tenant.id, Tenant.name)).all())
+    counts = dict(db.execute(select(ScanJob.status, func.count()).where(
+        or_(ScanJob.status.in_(["queued", "running"]), ScanJob.finished_at >= since)).group_by(ScanJob.status)).all())
+    health = system_health(db)
+    hi = []
+    if P.OPS_INCIDENTS_READ in pc.principal.platform_permissions:
+        hi = [{"id": str(i.id), "tenant": names.get(i.tenant_id), "reference": i.reference, "severity": i.severity,
+               "category": i.category, "status": i.status, "first_detected_at": i.first_detected_at,
+               "last_observed_at": i.last_observed_at, "is_demo": i.is_demo}
+              for i in db.execute(select(Incident).where(Incident.status.in_(OPEN_STATUSES),
+                                                         Incident.severity.in_(["critical", "high"]))
+                                  .order_by(Incident.last_observed_at.desc()).limit(15)).scalars()]
+    new_findings = dict(db.execute(select(Incident.severity, func.count()).where(Incident.first_detected_at >= since)
+                                   .group_by(Incident.severity)).all())
+    failing_accounts = db.execute(select(func.count()).select_from(HostingAccount).where(
+        HostingAccount.status.in_(["auth_failed", "error", "disconnected", "expired"]))).scalar_one()
+    return {
+        "jobs": {"queued": counts.get("queued", 0), "running": counts.get("running", 0),
+                 "failed_24h": counts.get("failed", 0), "succeeded_24h": counts.get("succeeded", 0),
+                 "partial_24h": counts.get("partial", 0), "stale_running": health["stale_running_jobs"]},
+        "new_findings_24h": {s: new_findings.get(s, 0) for s in SEVERITIES},
+        "high_priority_incidents": hi,
+        "notification_failures_24h": health["notifications_24h"].get("failed", 0),
+        "failing_connections": failing_accounts,
+        "workers": health["workers"],
+        "queues": health["redis"].get("queues", {}),
+        "scheduler": health["scheduler"],
+        "alerts": health["alerts"],
+    }
+
+
+@ops.get("/jobs")
+def ops_jobs(pc: PlatformContext = Depends(require_platform(P.OPS_JOBS_READ)), params: PageParams = Depends(),
+             status: str | None = Query(None, max_length=16), job_type: str | None = Query(None, max_length=32),
+             tenant_id: uuid.UUID | None = None) -> dict:
+    db = pc.db
+    q = select(ScanJob)
+    if status:
+        q = q.where(ScanJob.status == status)
+    if job_type:
+        q = q.where(ScanJob.job_type == job_type)
+    if tenant_id:
+        q = q.where(ScanJob.tenant_id == tenant_id)
+    names = dict(db.execute(select(Tenant.id, Tenant.name)).all())
+
+    def row(j: ScanJob) -> dict:
+        d = job_dict(j)
+        # Operators see job metadata but not customer inventory details.
+        d["result_summary"] = {k: v for k, v in (j.result_summary or {}).items()
+                               if k in ("files_seen", "files_hashed", "errors", "limits_hit", "changes", "ok",
+                                        "outcome", "http_status", "deletions_unverified")}
+        d["tenant"] = names.get(j.tenant_id)
+        d["tenant_id"] = str(j.tenant_id)
+        return d
+
+    return paginate(db, q.order_by(ScanJob.queued_at.desc()), params, row)
+
+
+def _ops_job(db: Session, job_id: uuid.UUID) -> ScanJob:
+    j = db.execute(select(ScanJob).where(ScanJob.id == job_id).with_for_update()).scalar_one_or_none()
+    if j is None:
+        raise NotFound("Job not found.")
+    return j
+
+
+@ops.post("/jobs/{job_id}/retry")
+def ops_retry(job_id: uuid.UUID, pc: PlatformContext = Depends(require_platform(P.OPS_JOBS_MANAGE))) -> dict:
+    j = _ops_job(pc.db, job_id)
+    new, created = jobs.retry_job(pc.db, j, pc.actor())
+    pc.db.commit()
+    if created:
+        jobs.dispatch(new)
+    return {"job_id": str(new.id), "created": created}
+
+
+@ops.post("/jobs/{job_id}/cancel")
+def ops_cancel(job_id: uuid.UUID, pc: PlatformContext = Depends(require_platform(P.OPS_JOBS_MANAGE))) -> dict:
+    j = _ops_job(pc.db, job_id)
+    if j.status not in ("queued", "running"):
+        raise ValidationFailed("Only queued or running jobs can be cancelled.")
+    jobs.request_cancel(pc.db, j, pc.actor())
+    pc.db.commit()
+    return {"job_id": str(j.id), "status": j.status, "cancel_requested": j.cancel_requested}
+
+
+@ops.get("/incidents")
+def ops_incidents(pc: PlatformContext = Depends(require_platform(P.OPS_INCIDENTS_READ)), params: PageParams = Depends(),
+                  severity: list[str] | None = Query(None), category: str | None = Query(None, max_length=32),
+                  tenant_id: uuid.UUID | None = None, open_only: bool = True) -> dict:
+    db = pc.db
+    q = select(Incident)
+    if open_only:
+        q = q.where(Incident.status.in_(OPEN_STATUSES))
+    if severity:
+        q = q.where(Incident.severity.in_(severity))
+    if category:
+        q = q.where(Incident.category == category)
+    if tenant_id:
+        q = q.where(Incident.tenant_id == tenant_id)
+    names = dict(db.execute(select(Tenant.id, Tenant.name)).all())
+    my_grants = {g for (g,) in db.execute(select(ManagedServiceGrant.tenant_id).where(
+        ManagedServiceGrant.grantee_user_id == pc.principal.user.id, ManagedServiceGrant.status == "active",
+        ManagedServiceGrant.expires_at > utcnow())).all()}
+    return paginate(db, q.order_by(Incident.last_observed_at.desc()), params, lambda i: {
+        "id": str(i.id), "tenant_id": str(i.tenant_id), "tenant": names.get(i.tenant_id), "reference": i.reference,
+        "severity": i.severity, "category": i.category, "finding_class": i.finding_class, "status": i.status,
+        "first_detected_at": i.first_detected_at, "last_observed_at": i.last_observed_at,
+        "occurrence_count": i.occurrence_count, "is_demo": i.is_demo,
+        # Titles can contain customer file paths: only shown with an active grant.
+        "title": i.title if i.tenant_id in my_grants else None,
+        "has_grant": i.tenant_id in my_grants,
+    })
+
+
+class OpsActionIn(BaseModel):
+    action: str = Field(min_length=3, max_length=200)
+    note: str = Field(min_length=3, max_length=5000)
+
+
+@ops.post("/incidents/{incident_id}/actions")
+def ops_incident_action(incident_id: uuid.UUID, body: OpsActionIn,
+                        pc: PlatformContext = Depends(require_platform(P.OPS_INCIDENTS_MANAGE))) -> Message:
+    from app.services.incidents import add_event
+
+    inc = pc.db.get(Incident, incident_id)
+    if inc is None:
+        raise NotFound("Incident not found.")
+    add_event(pc.db, inc, "note", actor_user_id=pc.principal.user.id, actor_type="staff",
+              body=f"[Trust Data SOC] {body.action}: {body.note}", data={"soc_action": body.action}, is_manual=True)
+    audit.record(pc.db, "ops.incident_action", actor=pc.actor(), tenant_id=inc.tenant_id, target_type="incident",
+                 target_id=inc.id, details={"action": body.action})
+    pc.db.commit()
+    return Message(message="Response action recorded.")
+
+
+@ops.get("/connections")
+def ops_connections(pc: PlatformContext = Depends(require_platform(P.OPS_DIAGNOSTICS)), params: PageParams = Depends(),
+                    failing_only: bool = True) -> dict:
+    db = pc.db
+    q = select(HostingAccount)
+    if failing_only:
+        q = q.where(HostingAccount.status.in_(["auth_failed", "error", "disconnected", "expired", "untested"]))
+    names = dict(db.execute(select(Tenant.id, Tenant.name)).all())
+    return paginate(db, q.order_by(HostingAccount.last_tested_at.desc().nulls_last()), params, lambda a: {
+        "id": str(a.id), "tenant": names.get(a.tenant_id), "tenant_id": str(a.tenant_id), "name": a.name,
+        "connector_type": a.connector_type, "hostname": a.hostname, "port": a.port, "status": a.status,
+        "last_tested_at": a.last_tested_at, "last_success_at": a.last_success_at,
+        "last_error_code": a.last_error_code, "last_error_message": a.last_error_message,
+        "host_key_fingerprint": a.host_key_fingerprint})
+
+
+@ops.get("/health")
+def ops_health(pc: PlatformContext = Depends(require_platform(P.PLATFORM_HEALTH_READ))) -> dict:
+    return system_health(pc.db) | {"alerting": _alerting_status(pc.db)}
+
+
+def _alerting_status(db: Session) -> dict:
+    from app.core.config import get_settings
+    from app.models import PlatformSetting
+    from app.services import platform_alerts
+
+    s = get_settings()
+    row = db.get(PlatformSetting, platform_alerts.STATE_KEY)
+    return {"active": s.platform_alerts_enabled and s.is_production_like,
+            "recipients": platform_alerts.recipients(db),
+            "smtp_configured": bool(s.smtp_host),
+            "last_evaluated_at": row.updated_at if row else None,
+            "open": sorted((row.value or {}).values(), key=lambda a: a["first_seen"]) if row else []}
+
+
+@admin.post("/platform-alerts/test")
+def test_platform_alert(pc: PlatformContext = Depends(require_platform(P.PLATFORM_USERS_MANAGE))) -> dict:
+    """Send a test platform alert to everyone who would receive a real one."""
+    from app.services import platform_alerts
+
+    to = platform_alerts.recipients(pc.db)
+    if not to:
+        raise ValidationFailed("Nobody would receive platform alerts: add staff with health access or CW_PLATFORM_ALERT_EMAILS.")
+    sent = platform_alerts.deliver(
+        to, "[CyberWatch] Test platform alert",
+        "This is a test of CyberWatch platform alerting, sent from System Health.\n\nReal alerts arrive when a "
+        "worker, the scheduler, the database, Redis, backups, disk space or the malware scanner has a problem "
+        "for more than 3 minutes, with reminders until fixed and an all-clear when resolved.", None)
+    audit.record(pc.db, "platform.alert_test_sent", actor=pc.actor(), details={"recipients": len(sent), "attempted": len(to)})
+    pc.db.commit()
+    return {"sent": sent, "failed": sorted(set(to) - set(sent))}
+
+
+@ops.get("/notifications")
+def ops_notifications(pc: PlatformContext = Depends(require_platform(P.OPS_JOBS_READ)), params: PageParams = Depends(),
+                      status: str = Query("failed", pattern="^(failed|pending|unconfigured)$")) -> dict:
+    names = dict(pc.db.execute(select(Tenant.id, Tenant.name)).all())
+    return paginate(pc.db, select(Notification).where(Notification.status == status)
+                    .order_by(Notification.created_at.desc()), params, lambda n: {
+        "id": str(n.id), "tenant": names.get(n.tenant_id), "channel": n.channel, "category": n.category,
+        "status": n.status, "attempts": n.attempts, "last_error": n.last_error, "created_at": n.created_at})
+
+
+# ---------------------------------------------------------------- NOC wall
+
+_RANK = {"down": 0, "alert": 1, "degraded": 2, "unknown": 3, "ok": 4, "paused": 5}
+_BAD_CONNECTION = ("auth_failed", "error", "disconnected", "expired")
+
+
+def _site_state(w: Website, incidents: dict[str, int], conn_status: str | None) -> tuple[str, list[str]]:
+    """Overall state of one website and the reasons, worst first: down > alert > degraded > unknown > ok."""
+    if w.status == "paused":
+        return "paused", ["Monitoring paused"]
+    reasons: list[str] = []
+    state = "ok"
+
+    def worse(s: str, why: str) -> None:
+        nonlocal state
+        reasons.append(why)
+        if _RANK[s] < _RANK[state]:
+            state = s
+
+    if w.last_availability_status in ("down", "error"):
+        worse("down", f"Unreachable ({w.consecutive_availability_failures} failed check(s) in a row)")
+    elif w.last_availability_status == "degraded":
+        worse("degraded", "Slow or unexpected response")
+    if incidents.get("critical") or incidents.get("high"):
+        worse("alert", f"{incidents.get('critical', 0) + incidents.get('high', 0)} open critical/high incident(s)")
+    if w.last_tls_status in ("expired", "invalid", "error"):
+        worse("degraded", f"TLS certificate {w.last_tls_status}")
+    elif w.last_tls_status == "expiring":
+        worse("degraded", "TLS certificate expiring soon")
+    if w.last_scan_status == "failed":
+        worse("degraded", "Last file scan failed")
+    if conn_status in _BAD_CONNECTION:
+        worse("degraded", f"Hosting connection {conn_status.replace('_', ' ')}")
+    if state == "ok" and w.last_availability_status is None and w.last_scan_at is None:
+        state = "unknown"
+        reasons.append("No checks yet")
+    return state, reasons
+
+
+@ops.get("/noc")
+def ops_noc(pc: PlatformContext = Depends(require_platform(P.OPS_JOBS_READ)),
+            include_demo: bool = False) -> dict:
+    """Live status of every monitored website and hosting connection across all organisations (operational
+    metadata only: names, status, counts; incident content and files still need a managed-service grant)."""
+    from app.models import AvailabilityCheck
+
+    db = pc.db
+    now = utcnow()
+    tenants = {t.id: t for t in db.execute(select(Tenant)).scalars()}
+    visible = {tid for tid, t in tenants.items() if include_demo or not t.is_demo}
+    sites = [w for w in db.execute(select(Website).where(Website.status != "deleted")).scalars() if w.tenant_id in visible]
+    accounts = {a.id: a for a in db.execute(select(HostingAccount)).scalars() if a.tenant_id in visible}
+
+    open_inc: dict[uuid.UUID, dict[str, int]] = {}
+    for wid, sev, n in db.execute(select(Incident.website_id, Incident.severity, func.count())
+                                  .where(Incident.status.in_(OPEN_STATUSES), Incident.website_id.is_not(None))
+                                  .group_by(Incident.website_id, Incident.severity)).all():
+        open_inc.setdefault(wid, {})[sev] = n
+    since = now - timedelta(hours=24)
+    uptime = {wid: (up, total) for wid, up, total in db.execute(
+        select(AvailabilityCheck.website_id,
+               func.count().filter(AvailabilityCheck.outcome.in_(["up", "degraded"])), func.count())
+        .where(AvailabilityCheck.checked_at >= since).group_by(AvailabilityCheck.website_id)).all()}
+    latest = {wid: (ms, code) for wid, ms, code in db.execute(
+        select(AvailabilityCheck.website_id, AvailabilityCheck.response_ms, AvailabilityCheck.http_status)
+        .where(AvailabilityCheck.checked_at >= now - timedelta(days=2))
+        .distinct(AvailabilityCheck.website_id)
+        .order_by(AvailabilityCheck.website_id, AvailabilityCheck.checked_at.desc())).all()}
+
+    rows = []
+    for w in sites:
+        acct = accounts.get(w.hosting_account_id) if w.hosting_account_id else None
+        inc = open_inc.get(w.id, {})
+        state, reasons = _site_state(w, inc, acct.status if acct else None)
+        up, total = uptime.get(w.id, (0, 0))
+        ms, code = latest.get(w.id, (None, None))
+        t = tenants[w.tenant_id]
+        rows.append({
+            "id": str(w.id), "tenant_id": str(w.tenant_id), "tenant": t.name, "is_demo": t.is_demo,
+            "name": w.name, "url": w.url, "hostname": w.hostname, "environment": w.environment,
+            "state": state, "reasons": reasons,
+            "availability": {"status": w.last_availability_status, "checked_at": w.last_availability_at,
+                             "response_ms": ms, "http_status": code,
+                             "consecutive_failures": w.consecutive_availability_failures,
+                             "uptime_24h": round(100 * up / total, 1) if total else None, "checks_24h": total},
+            "tls": {"status": w.last_tls_status,
+                    "days_left": (w.tls_expires_at - now).days if w.tls_expires_at else None},
+            "file_scan": {"status": w.last_scan_status, "at": w.last_scan_at},
+            "connection": {"id": str(acct.id), "name": acct.name, "connector": acct.connector_type,
+                           "status": acct.status} if acct else None,
+            "open_incidents": {s: inc.get(s, 0) for s in SEVERITIES},
+        })
+    rows.sort(key=lambda r: (_RANK[r["state"]], -(r["open_incidents"]["critical"] * 100 + r["open_incidents"]["high"]),
+                             r["tenant"].lower(), r["name"].lower()))
+    connections = sorted(({
+        "id": str(a.id), "tenant": tenants[a.tenant_id].name, "name": a.name, "connector": a.connector_type,
+        "hostname": a.hostname, "status": a.status, "last_tested_at": a.last_tested_at,
+        "last_success_at": a.last_success_at, "last_error": a.last_error_message,
+        "websites": sum(1 for w in sites if w.hosting_account_id == a.id)} for a in accounts.values()),
+        key=lambda c: (c["status"] not in _BAD_CONNECTION, c["status"] != "untested", c["tenant"].lower(), c["name"]))
+    summary = {s: sum(1 for r in rows if r["state"] == s) for s in _RANK}
+    health = system_health(db)
+    from app.models import SupportTicket
+    from app.services.service_desk import OPEN_TICKET_STATUSES
+
+    open_q = select(func.count()).select_from(SupportTicket).where(SupportTicket.status.in_(OPEN_TICKET_STATUSES))
+    desk = {"open": db.execute(open_q).scalar_one(),
+            "overdue": db.execute(open_q.where(or_(
+                SupportTicket.sla_resolution_due < now,
+                SupportTicket.first_response_at.is_(None) & (SupportTicket.sla_response_due < now)))).scalar_one()}
+    return {
+        "generated_at": now, "summary": summary, "websites": rows, "connections": connections,
+        "connections_summary": {"total": len(connections),
+                                "failing": sum(1 for c in connections if c["status"] in _BAD_CONNECTION),
+                                "untested": sum(1 for c in connections if c["status"] == "untested")},
+        "open_incidents": {s: sum(r["open_incidents"][s] for r in rows) for s in SEVERITIES},
+        "service_desk": desk,
+        "platform": {"workers_healthy": sum(1 for wk in health["workers"] if wk.get("state") == "healthy"),
+                     "workers_failed": sum(1 for wk in health["workers"] if wk.get("state") == "failed"),
+                     "scheduler_ok": health["scheduler"]["ok"], "alerts": health["alerts"]},
+    }
+
+
+# ---------------------------------------------------------------- service desk (staff)
+
+_TICKET_STATUSES = ("open", "in_progress", "awaiting_customer", "resolved", "closed", "cancelled")
+
+
+def _desk_ticket(db: Session, ticket_id: uuid.UUID):
+    from app.models import SupportTicket
+
+    t = db.get(SupportTicket, ticket_id)
+    if t is None:
+        raise NotFound("Request not found.")
+    return t
+
+
+def _desk_row(db: Session, t, names: dict) -> dict:
+    from app.services import service_desk
+
+    assignee = db.get(User, t.assigned_to) if t.assigned_to else None
+    return {"id": str(t.id), "tenant_id": str(t.tenant_id), "tenant": names.get(t.tenant_id), "reference": t.reference,
+            "subject": t.subject, "category": t.category, "priority": t.priority, "status": t.status,
+            "is_service_request": t.category in service_desk.SERVICE_CATEGORIES,
+            "assigned_to": str(t.assigned_to) if t.assigned_to else None,
+            "assignee": (assignee.full_name or assignee.email) if assignee else None,
+            "authorised": t.remediation_approved_at is not None, "billing_status": t.billing_status,
+            "sla": {"response_due": t.sla_response_due, "resolution_due": t.sla_resolution_due,
+                    **service_desk.sla_state(t)},
+            "checklist_done": sum(1 for c in (t.checklist or []) if c.get("done")),
+            "checklist_total": len(t.checklist or []),
+            "created_at": t.created_at, "updated_at": t.updated_at}
+
+
+@ops.get("/service-desk")
+def desk_queue(pc: PlatformContext = Depends(require_platform(P.OPS_SERVICE_DESK)), params: PageParams = Depends(),
+               view: str = Query("open", pattern="^(open|mine|unassigned|overdue|resolved|all)$")) -> dict:
+    """Every organisation's support and service requests, most urgent first."""
+    from sqlalchemy import case
+
+    from app.models import SupportTicket
+    from app.services.service_desk import OPEN_TICKET_STATUSES
+
+    db, now = pc.db, utcnow()
+    q = select(SupportTicket)
+    if view in ("open", "mine", "unassigned", "overdue"):
+        q = q.where(SupportTicket.status.in_(OPEN_TICKET_STATUSES))
+    if view == "mine":
+        q = q.where(SupportTicket.assigned_to == pc.principal.user.id)
+    elif view == "unassigned":
+        q = q.where(SupportTicket.assigned_to.is_(None))
+    elif view == "overdue":
+        q = q.where(or_(SupportTicket.sla_resolution_due < now,
+                        (SupportTicket.first_response_at.is_(None)) & (SupportTicket.sla_response_due < now)))
+    elif view == "resolved":
+        q = q.where(SupportTicket.status.in_(["resolved", "closed", "cancelled"]))
+    prio = case({"urgent": 0, "high": 1, "normal": 2, "low": 3}, value=SupportTicket.priority, else_=4)
+    q = q.order_by(SupportTicket.sla_resolution_due.asc().nulls_last(), prio, SupportTicket.created_at)
+    names = dict(db.execute(select(Tenant.id, Tenant.name)).all())
+    page = paginate(db, q, params, lambda t: _desk_row(db, t, names))
+    counts = {
+        "open": db.execute(select(func.count()).select_from(SupportTicket).where(SupportTicket.status.in_(OPEN_TICKET_STATUSES))).scalar_one(),
+        "unassigned": db.execute(select(func.count()).select_from(SupportTicket).where(
+            SupportTicket.status.in_(OPEN_TICKET_STATUSES), SupportTicket.assigned_to.is_(None))).scalar_one(),
+        "overdue": db.execute(select(func.count()).select_from(SupportTicket).where(
+            SupportTicket.status.in_(OPEN_TICKET_STATUSES),
+            or_(SupportTicket.sla_resolution_due < now,
+                (SupportTicket.first_response_at.is_(None)) & (SupportTicket.sla_response_due < now)))).scalar_one(),
+        "mine": db.execute(select(func.count()).select_from(SupportTicket).where(
+            SupportTicket.status.in_(OPEN_TICKET_STATUSES), SupportTicket.assigned_to == pc.principal.user.id)).scalar_one(),
+    }
+    return page | {"counts": counts}
+
+
+@ops.get("/service-desk/{ticket_id}")
+def desk_ticket(ticket_id: uuid.UUID, pc: PlatformContext = Depends(require_platform(P.OPS_SERVICE_DESK))) -> dict:
+    from app.api.v1.commerce import ticket_dict
+
+    db = pc.db
+    t = _desk_ticket(db, ticket_id)
+    names = dict(db.execute(select(Tenant.id, Tenant.name).where(Tenant.id == t.tenant_id)).all())
+    d = ticket_dict(db, t, with_messages=True, internal=True) | _desk_row(db, t, names)
+    w = db.get(Website, t.website_id) if t.website_id else None
+    d["website"] = {"id": str(w.id), "name": w.name, "url": w.url} if w else None
+    # Incident metadata only; details, evidence and files are seen in the customer portal through the grant.
+    ids = [uuid.UUID(x) for x in (t.incident_ids or [])]
+    d["incidents"] = [{"id": str(i.id), "reference": i.reference, "severity": i.severity, "category": i.category,
+                       "status": i.status} for i in db.execute(select(Incident).where(Incident.id.in_(ids))).scalars()] if ids else []
+    g = db.get(ManagedServiceGrant, t.grant_id) if t.grant_id else None
+    d["grant"] = {"id": str(g.id), "status": g.status, "expires_at": g.expires_at,
+                  "grantee_user_id": str(g.grantee_user_id),
+                  "portal_url": f"/app/{t.tenant_id}/support/{t.id}"} if g else None
+    d["checklist"] = t.checklist or []
+    creator = db.get(User, t.created_by)
+    d["requested_by"] = {"name": creator.full_name, "email": creator.email} if creator else None
+    return d
+
+
+class DeskAssignIn(BaseModel):
+    user_id: uuid.UUID | None = None  # omitted: assign to me
+    unassign: bool = False
+
+
+@ops.post("/service-desk/{ticket_id}/assign")
+def desk_assign(ticket_id: uuid.UUID, body: DeskAssignIn,
+                pc: PlatformContext = Depends(require_platform(P.OPS_SERVICE_DESK))) -> dict:
+    from app.services import service_desk
+
+    db = pc.db
+    t = _desk_ticket(db, ticket_id)
+    if body.unassign:
+        t.assigned_to = None
+        service_desk.revoke_grant(db, t, pc.principal.user.id, "unassigned")
+    else:
+        uid = body.user_id or pc.principal.user.id
+        u = db.get(User, uid)
+        if u is None or not u.is_platform_staff or not u.is_active:
+            raise ValidationFailed("Assign to an active staff member.")
+        if t.assigned_to == uid:
+            service_desk.ensure_grant(db, t, pc.actor())  # nothing else changes; no duplicate timeline entry
+            db.commit()
+            return desk_ticket(ticket_id, pc)
+        t.assigned_to = uid
+        if t.status == "open":
+            t.status = "in_progress"
+        service_desk.ensure_grant(db, t, pc.actor())
+        service_desk.add_message(db, t, pc.principal.user.id, f"Assigned to {u.full_name or u.email}.", staff=True,
+                                 kind="status")
+        service_desk.notify(db, t, to_customer=True, key=f"assigned:{uid}", subject=f"Engineer assigned: {t.subject}",
+                            body=f"{u.full_name or 'A Trust Data engineer'} is now working on your request.")
+    audit.record(db, "service_desk.assigned", actor=pc.actor(), tenant_id=t.tenant_id, target_type="ticket",
+                 target_id=t.id, details={"assigned_to": str(t.assigned_to) if t.assigned_to else None})
+    db.commit()
+    return desk_ticket(ticket_id, pc)
+
+
+class DeskStatusIn(BaseModel):
+    status: str = Field(pattern="^(open|in_progress|awaiting_customer|resolved|closed|cancelled)$")
+
+
+@ops.post("/service-desk/{ticket_id}/status")
+def desk_status(ticket_id: uuid.UUID, body: DeskStatusIn,
+                pc: PlatformContext = Depends(require_platform(P.OPS_SERVICE_DESK))) -> dict:
+    from app.services import service_desk
+
+    db = pc.db
+    t = _desk_ticket(db, ticket_id)
+    if body.status == "resolved" and t.category in service_desk.SERVICE_CATEGORIES and not (t.report or {}).get("actions_taken"):
+        raise ValidationFailed("Write the report (at least what was done) before resolving a service request.")
+    old = t.status
+    service_desk.set_status(db, t, body.status, pc.principal.user.id)
+    audit.record(db, "service_desk.status_changed", actor=pc.actor(), tenant_id=t.tenant_id, target_type="ticket",
+                 target_id=t.id, details={"from": old, "to": body.status})
+    if body.status in ("awaiting_customer", "resolved"):
+        service_desk.notify(db, t, to_customer=True, key=f"status:{body.status}:{utcnow().timestamp():.0f}",
+                            subject=("Your input is needed: " if body.status == "awaiting_customer" else "Resolved: ") + t.subject,
+                            body=("We need information from you to continue." if body.status == "awaiting_customer" else
+                                  "We have completed the work. The report is on the request page. Close the request to "
+                                  "confirm, or reply if anything is still wrong."))
+    db.commit()
+    return desk_ticket(ticket_id, pc)
+
+
+class DeskMessageIn(BaseModel):
+    body: str = Field(min_length=1, max_length=20000)
+    internal: bool = False
+
+
+@ops.post("/service-desk/{ticket_id}/messages")
+def desk_message(ticket_id: uuid.UUID, body: DeskMessageIn,
+                 pc: PlatformContext = Depends(require_platform(P.OPS_SERVICE_DESK))) -> dict:
+    from app.services import service_desk
+
+    db = pc.db
+    t = _desk_ticket(db, ticket_id)
+    service_desk.add_message(db, t, pc.principal.user.id, body.body, staff=True, internal=body.internal)
+    if not body.internal:
+        service_desk.notify(db, t, to_customer=True, key=f"reply:{utcnow().timestamp():.0f}",
+                            subject=f"New reply: {t.subject}", body=body.body[:2000])
+    audit.record(db, "service_desk.note_added" if body.internal else "service_desk.replied", actor=pc.actor(),
+                 tenant_id=t.tenant_id, target_type="ticket", target_id=t.id)
+    db.commit()
+    return desk_ticket(ticket_id, pc)
+
+
+class DeskChecklistIn(BaseModel):
+    key: str = Field(max_length=16)
+    done: bool
+
+
+@ops.post("/service-desk/{ticket_id}/checklist")
+def desk_checklist(ticket_id: uuid.UUID, body: DeskChecklistIn,
+                   pc: PlatformContext = Depends(require_platform(P.OPS_SERVICE_DESK))) -> dict:
+    import copy
+
+    db = pc.db
+    t = _desk_ticket(db, ticket_id)
+    items = copy.deepcopy(t.checklist or [])
+    item = next((c for c in items if c["key"] == body.key), None)
+    if item is None:
+        raise NotFound("Checklist item not found.")
+    item["done"], item["done_at"] = body.done, utcnow().isoformat() if body.done else None
+    item["done_by"] = str(pc.principal.user.id) if body.done else None
+    t.checklist, t.updated_at = items, utcnow()
+    db.commit()
+    return desk_ticket(ticket_id, pc)
+
+
+class DeskTimeIn(BaseModel):
+    minutes: int = Field(ge=1, le=24 * 60)
+    note: str = Field(default="", max_length=500)
+
+
+@ops.post("/service-desk/{ticket_id}/time")
+def desk_time(ticket_id: uuid.UUID, body: DeskTimeIn,
+              pc: PlatformContext = Depends(require_platform(P.OPS_SERVICE_DESK))) -> dict:
+    from app.services import service_desk
+
+    db = pc.db
+    t = _desk_ticket(db, ticket_id)
+    t.time_spent_minutes += body.minutes
+    service_desk.add_message(db, t, pc.principal.user.id, f"Logged {body.minutes} min{': ' + body.note if body.note else ''}",
+                             staff=True, internal=True, kind="time")
+    db.commit()
+    return desk_ticket(ticket_id, pc)
+
+
+class DeskReportIn(BaseModel):
+    findings: str = Field(default="", max_length=20000)
+    actions_taken: str = Field(default="", max_length=20000)
+    recommendations: str = Field(default="", max_length=20000)
+    verification: str = Field(default="", max_length=5000)
+
+
+@ops.put("/service-desk/{ticket_id}/report")
+def desk_report(ticket_id: uuid.UUID, body: DeskReportIn,
+                pc: PlatformContext = Depends(require_platform(P.OPS_SERVICE_DESK))) -> dict:
+    db = pc.db
+    t = _desk_ticket(db, ticket_id)
+    author = pc.principal.user
+    t.report = body.model_dump() | {"updated_at": utcnow().isoformat(), "engineer": author.full_name or author.email}
+    t.updated_at = utcnow()
+    audit.record(db, "service_desk.report_saved", actor=pc.actor(), tenant_id=t.tenant_id, target_type="ticket", target_id=t.id)
+    db.commit()
+    return desk_ticket(ticket_id, pc)
+
+
+class DeskBillingIn(BaseModel):
+    billing_status: str = Field(pattern="^(included|quote|billable|waived)$")
+    price_minor: int | None = Field(default=None, ge=0)
+
+
+@ops.put("/service-desk/{ticket_id}/billing")
+def desk_billing(ticket_id: uuid.UUID, body: DeskBillingIn,
+                 pc: PlatformContext = Depends(require_platform(P.OPS_SERVICE_DESK))) -> dict:
+    db = pc.db
+    t = _desk_ticket(db, ticket_id)
+    before = (t.billing_status, t.price_minor)
+    t.billing_status, t.price_minor = body.billing_status, body.price_minor
+    audit.record(db, "service_desk.billing_changed", actor=pc.actor(), tenant_id=t.tenant_id, target_type="ticket",
+                 target_id=t.id, details={"from": list(before), "to": [body.billing_status, body.price_minor]})
+    db.commit()
+    return desk_ticket(ticket_id, pc)
+
+
+@ops.get("/service-desk-staff")
+def desk_staff(pc: PlatformContext = Depends(require_platform(P.OPS_SERVICE_DESK))) -> list[dict]:
+    """Engineers a request can be assigned to."""
+    roles = [k for k, r in ALL_ROLES.items() if r.scope == "platform" and P.OPS_SERVICE_DESK in r.permissions]
+    rows = pc.db.execute(select(User).join(PlatformRoleAssignment, PlatformRoleAssignment.user_id == User.id)
+                         .where(User.is_active.is_(True), PlatformRoleAssignment.role_key.in_(roles))
+                         .order_by(User.full_name)).scalars().unique()
+    return [{"id": str(u.id), "name": u.full_name or u.email, "email": u.email} for u in rows]
+
+
+# ---------------------------------------------------------------- remediation (staff)
+
+
+def _remediation_gate(db: Session, t, user_id: uuid.UUID) -> str | None:
+    """Why this person may not change files for this request now (None: they may)."""
+    if t.status in ("resolved", "closed", "cancelled"):
+        return "The request is not open."
+    if t.remediation_approved_at is None:
+        return "The customer has not authorised the work."
+    if t.assigned_to != user_id:
+        return "Only the engineer assigned to the request can change files."
+    g = db.get(ManagedServiceGrant, t.grant_id) if t.grant_id else None
+    if g is None or g.status != "active" or g.grantee_user_id != user_id or g.expires_at <= utcnow():
+        return "Your access grant for this organisation is not active."
+    if t.website_id is None:
+        return "The request is not linked to a website."
+    return None
+
+
+@ops.get("/service-desk/{ticket_id}/remediation")
+def desk_remediation(ticket_id: uuid.UUID, pc: PlatformContext = Depends(require_platform(P.OPS_SERVICE_DESK))) -> dict:
+    from app.models import RemediationAction, RemediationCredential
+    from app.services import remediation
+
+    db = pc.db
+    t = _desk_ticket(db, ticket_id)
+    blocked = _remediation_gate(db, t, pc.principal.user.id)
+    w = db.get(Website, t.website_id) if t.website_id else None
+    cred = db.execute(select(RemediationCredential).where(
+        RemediationCredential.hosting_account_id == w.hosting_account_id)).scalar_one_or_none() if w and w.hosting_account_id else None
+    actions = db.execute(select(RemediationAction).where(RemediationAction.ticket_id == t.id)
+                         .order_by(RemediationAction.performed_at.desc())).scalars()
+    return {
+        "blocked": blocked,
+        "access": {"configured": cred is not None, "status": cred.status if cred else None,
+                   "last_result": cred.last_result if cred else None},
+        # File lists are site data: shown only to the engineer allowed to act (grant holder).
+        "candidates": remediation.candidates(db, w, t.incident_ids or []) if (w and not blocked) else [],
+        "actions": [remediation.action_dict(db, a) for a in actions],
+    }
+
+
+class RemediationIn(BaseModel):
+    action: str = Field(pattern="^(restore_genuine|quarantine)$")
+    path: str = Field(min_length=1, max_length=1024)
+    expected_sha256: str = Field(pattern="^[0-9a-f]{64}$")
+
+
+@ops.post("/service-desk/{ticket_id}/remediation/actions")
+def desk_remediate(ticket_id: uuid.UUID, body: RemediationIn,
+                   pc: PlatformContext = Depends(require_platform(P.OPS_SERVICE_DESK))) -> dict:
+    from app.services import remediation, service_desk
+
+    db = pc.db
+    t = _desk_ticket(db, ticket_id)
+    blocked = _remediation_gate(db, t, pc.principal.user.id)
+    if blocked:
+        raise ValidationFailed(blocked, code="not_permitted")
+    w = db.get(Website, t.website_id)
+    actor = pc.principal.actor(t.grant_id)
+    try:
+        a = remediation.perform(db, website=w, ticket_id=t.id, action=body.action, path=body.path,
+                                expected_sha256=body.expected_sha256, actor_user_id=pc.principal.user.id, actor=actor)
+    except remediation.RemediationError as exc:
+        db.commit()  # keep the audit entry of a refusal
+        raise ValidationFailed(exc.message, code=exc.code) from exc
+    verb = "Restored the official version of" if body.action == "restore_genuine" else "Quarantined (removed)"
+    if a.status == "done":
+        service_desk.add_message(db, t, pc.principal.user.id, f"{verb} {a.path}. A copy of the previous file is "
+                                 "kept so this can be undone.", staff=True, kind="status")
+    db.commit()
+    out = remediation.action_dict(db, a)
+    if a.status != "done":
+        raise ValidationFailed(f"The change failed: {a.error}", code="remediation_failed", details=out)
+    return out
+
+
+@ops.post("/service-desk/{ticket_id}/remediation/actions/{action_id}/undo")
+def desk_remediation_undo(ticket_id: uuid.UUID, action_id: uuid.UUID,
+                          pc: PlatformContext = Depends(require_platform(P.OPS_SERVICE_DESK))) -> dict:
+    from app.models import RemediationAction
+    from app.services import remediation, service_desk
+
+    db = pc.db
+    t = _desk_ticket(db, ticket_id)
+    blocked = _remediation_gate(db, t, pc.principal.user.id)
+    if blocked:
+        raise ValidationFailed(blocked, code="not_permitted")
+    a = db.execute(select(RemediationAction).where(RemediationAction.id == action_id,
+                                                   RemediationAction.ticket_id == t.id)).scalar_one_or_none()
+    if a is None:
+        raise NotFound("Change not found.")
+    try:
+        remediation.undo(db, a, actor_user_id=pc.principal.user.id, actor=pc.principal.actor(t.grant_id))
+    except remediation.RemediationError as exc:
+        raise ValidationFailed(exc.message, code=exc.code) from exc
+    service_desk.add_message(db, t, pc.principal.user.id, f"Undid the change to {a.path} (previous content restored).",
+                             staff=True, kind="status")
+    db.commit()
+    return remediation.action_dict(db, a)
+
+
+
+class AuthorisationRequestIn(BaseModel):
+    scope: str = Field(min_length=10, max_length=5000)
+    message: str = Field(default="", max_length=5000)
+
+
+@ops.post("/service-desk/{ticket_id}/request-authorisation")
+def desk_request_authorisation(ticket_id: uuid.UUID, body: AuthorisationRequestIn,
+                               pc: PlatformContext = Depends(require_platform(P.OPS_SERVICE_DESK))) -> dict:
+    """Ask the customer to authorise the work, proposing exactly what will be changed. The customer can accept
+    the scope as proposed or edit it; nothing on their site is touched until they do."""
+    from app.services import service_desk
+
+    db = pc.db
+    t = _desk_ticket(db, ticket_id)
+    if t.category not in service_desk.SERVICE_CATEGORIES:
+        raise ValidationFailed("Only service requests need authorisation.")
+    if t.status in ("resolved", "closed", "cancelled"):
+        raise ValidationFailed("The request is not open.")
+    if t.remediation_approved_at is not None:
+        raise ValidationFailed("The customer has already authorised this work.")
+    t.proposed_scope, t.authorisation_requested_at = body.scope.strip(), utcnow()
+    text_ = (f"We need your authorisation before changing anything on your website. Proposed scope:\n{t.proposed_scope}"
+             + (f"\n\n{body.message.strip()}" if body.message.strip() else "")
+             + "\n\nPlease review it under 'Authorise the work' on this request.")
+    service_desk.add_message(db, t, pc.principal.user.id, text_, staff=True, kind="auth_request")
+    if t.status != "awaiting_customer":
+        service_desk.set_status(db, t, "awaiting_customer", pc.principal.user.id)
+    service_desk.notify(db, t, to_customer=True, key=f"authreq:{utcnow().timestamp():.0f}",
+                        subject=f"Your authorisation is needed: {t.subject}",
+                        body=f"Before we change anything on your website we need your authorisation.\n\n"
+                             f"Proposed scope:\n{t.proposed_scope}\n\nOpen the request to review and authorise it. "
+                             "Only an organisation owner can authorise.", include_owners=True)
+    audit.record(db, "service_desk.authorisation_requested", actor=pc.actor(), tenant_id=t.tenant_id,
+                 target_type="ticket", target_id=t.id, details={"scope": t.proposed_scope})
+    db.commit()
+    return desk_ticket(ticket_id, pc)
+
+
+# ---------------------------------------------------------------- investigation (staff)
+
+
+def _investigation_dict(inv) -> dict:
+    return {"id": str(inv.id), "status": inv.status, "started_at": inv.started_at, "finished_at": inv.finished_at,
+            "error": inv.error, "result": inv.result or {}}
+
+
+@ops.post("/service-desk/{ticket_id}/investigations", status_code=202)
+def desk_investigate(ticket_id: uuid.UUID, pc: PlatformContext = Depends(require_platform(P.OPS_SERVICE_DESK))) -> dict:
+    """Start an entry-point investigation (reads the site's logs and records; changes nothing)."""
+    from app.models import Investigation
+    from app.services import investigation
+
+    db = pc.db
+    t = _desk_ticket(db, ticket_id)
+    blocked = _remediation_gate(db, t, pc.principal.user.id)
+    if blocked:
+        raise ValidationFailed(blocked.replace("change files", "investigate the site"), code="not_permitted")
+    running = db.execute(select(Investigation).where(Investigation.ticket_id == t.id, Investigation.status == "running",
+                                                     Investigation.started_at > utcnow() - timedelta(minutes=30))).scalars().first()
+    if running:
+        return _investigation_dict(running)
+    inv = Investigation(id=uuid.uuid4(), tenant_id=t.tenant_id, ticket_id=t.id, website_id=t.website_id,
+                        status="running", requested_by=pc.principal.user.id, started_at=utcnow(), result={})
+    db.add(inv)
+    audit.record(db, "service_desk.investigation_started", actor=pc.principal.actor(t.grant_id), tenant_id=t.tenant_id,
+                 target_type="ticket", target_id=t.id)
+    db.commit()
+    investigation.dispatch(inv.id)
+    return _investigation_dict(inv)
+
+
+@ops.get("/service-desk/{ticket_id}/investigations/latest")
+def desk_investigation_latest(ticket_id: uuid.UUID,
+                              pc: PlatformContext = Depends(require_platform(P.OPS_SERVICE_DESK))) -> dict:
+    from app.models import Investigation
+    from app.services import investigation
+
+    db = pc.db
+    t = _desk_ticket(db, ticket_id)
+    if _remediation_gate(db, t, pc.principal.user.id):
+        return {"investigation": None, "allowed": False}  # results are site data: grant holder only
+    inv = db.execute(select(Investigation).where(Investigation.ticket_id == t.id)
+                     .order_by(Investigation.started_at.desc()).limit(1)).scalar_one_or_none()
+    out = _investigation_dict(inv) if inv else None
+    if out and inv.status == "done":
+        out["report_text"] = investigation.summary_text(inv.result or {})
+    return {"investigation": out, "allowed": True}

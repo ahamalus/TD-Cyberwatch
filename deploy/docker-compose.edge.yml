@@ -1,0 +1,27 @@
+# Adds the HTTPS edge (Caddy) in front of "web". Use together with the base file:
+#   docker compose -f docker-compose.yml -f deploy/docker-compose.edge.yml up -d
+services:
+  web:
+    ports: !reset []
+
+  caddy:
+    image: caddy:2.8-alpine
+    depends_on: [web]
+    environment:
+      CW_DOMAIN: ${CW_DOMAIN}
+      ACME_EMAIL: ${ACME_EMAIL}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./deploy/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    restart: unless-stopped
+    networks: [public]
+    security_opt: ["no-new-privileges:true"]
+
+volumes:
+  caddy_data: {}
+  caddy_config: {}

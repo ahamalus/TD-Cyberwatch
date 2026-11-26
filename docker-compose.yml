@@ -1,0 +1,146 @@
+# TrustData CyberWatch — reproducible deployment.
+# Only the "web" service publishes a port, and only on localhost by default:
+# put an HTTPS reverse proxy (deploy/nginx or Caddy) in front of it.
+# PostgreSQL and Redis are never published.
+
+# Database logins: POSTGRES_USER owns the schema (a superuser, used only by "migrate"). The API and
+# workers connect as POSTGRES_APP_USER, which cannot bypass row-level security and never receives the
+# owner password. Without POSTGRES_APP_PASSWORD in .env they fall back to the owner login and the
+# health check reports "database role" FAIL (deploy/scripts/enable-app-db-role.sh fixes it).
+x-backend-env: &backend-env
+  CW_DATABASE_URL: postgresql+psycopg://${POSTGRES_APP_USER:-${POSTGRES_USER}}:${POSTGRES_APP_PASSWORD:-${POSTGRES_PASSWORD}}@db:5432/${POSTGRES_DB}
+  POSTGRES_PASSWORD: ""
+  POSTGRES_APP_PASSWORD: ""
+  CW_REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+  # Malware scanning daemon; set CW_CLAMAV_HOST= (empty) in .env to run without ClamAV.
+  CW_CLAMAV_HOST: ${CW_CLAMAV_HOST-clamav}
+
+x-backend: &backend
+  build: ./backend
+  image: trustdata/cyberwatch-backend:${CW_VERSION:-local}
+  env_file: .env
+  environment: *backend-env
+  depends_on:
+    db: { condition: service_healthy }
+    redis: { condition: service_healthy }
+  restart: unless-stopped
+  networks: [internal]
+  read_only: true
+  tmpfs: ["/tmp"]
+  security_opt: ["no-new-privileges:true"]
+  cap_drop: ["ALL"]
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes: ["pgdata:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      retries: 10
+    restart: unless-stopped
+    networks: [internal]
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD}", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
+    volumes: ["redisdata:/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$REDIS_PASSWORD\" ping | grep PONG"]
+      interval: 10s
+      retries: 10
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    restart: unless-stopped
+    networks: [internal]
+
+  # ClamAV daemon: scans the file contents that workers retrieve (see app/monitoring/malware.py).
+  # Needs about 1.5-2 GB of RAM. Its built-in freshclam downloads signature updates, so it is on the
+  # egress network; workers reach it on the internal network. The first start downloads ~300 MB of
+  # signatures and takes several minutes; scans meanwhile report files as "not scanned".
+  clamav:
+    image: clamav/clamav:1.4
+    environment:
+      CLAMAV_NO_MILTERD: "true"
+    volumes: ["clamav-db:/var/lib/clamav"]
+    healthcheck:
+      test: ["CMD", "clamdcheck.sh"]
+      interval: 60s
+      timeout: 30s
+      retries: 3
+      start_period: 15m
+    restart: unless-stopped
+    networks: [internal, egress]
+
+  migrate:
+    <<: *backend
+    restart: "no"
+    environment:
+      <<: *backend-env
+      CW_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      CW_APP_DB_USER: ${POSTGRES_APP_USER:-}
+      CW_APP_DB_PASSWORD: ${POSTGRES_APP_PASSWORD:-}
+    command: ["sh", "-c", "alembic upgrade head && python -m app.cli seed && python -m app.cli ensure-app-role"]
+
+  api:
+    <<: *backend
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    volumes: ["storage:/var/lib/cyberwatch/storage"]
+    # Egress needed for Paystack verification and website ownership checks
+    # (all outbound requests still pass the SSRF policy).
+    networks: [internal, egress]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:8000/api/v1/health/ready')"]
+      interval: 30s
+      retries: 3
+
+  # Monitoring worker: file scans, connection tests, availability and TLS checks.
+  # Runs on the "egress" network so it can reach customer hosting; the API does not.
+  worker-monitoring:
+    <<: *backend
+    command: ["celery", "-A", "app.workers.celery_app", "worker", "-Q", "monitoring,checks", "-n", "monitoring@%h", "--concurrency", "${CW_MONITORING_CONCURRENCY:-4}", "--loglevel", "INFO"]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    networks: [internal, egress]
+
+  worker-notifications:
+    <<: *backend
+    command: ["celery", "-A", "app.workers.celery_app", "worker", "-Q", "notifications,default", "-n", "notifications@%h", "--concurrency", "2", "--loglevel", "INFO"]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    volumes: ["storage:/var/lib/cyberwatch/storage"]
+    networks: [internal, egress]
+
+  scheduler:
+    <<: *backend
+    command: ["celery", "-A", "app.workers.celery_app", "beat", "--loglevel", "INFO", "-s", "/tmp/celerybeat-schedule"]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+
+  web:
+    build: ./frontend
+    image: trustdata/cyberwatch-web:${CW_VERSION:-local}
+    depends_on: [api]
+    ports: ["${CW_WEB_BIND:-127.0.0.1}:${CW_WEB_PORT:-8080}:8080"]
+    restart: unless-stopped
+    networks: [internal, public]
+    read_only: true
+    tmpfs: ["/tmp", "/var/cache/nginx"]
+    security_opt: ["no-new-privileges:true"]
+
+networks:
+  internal:
+    internal: true
+  egress: {}
+  public: {}
+
+volumes:
+  clamav-db: {}
+  pgdata: {}
+  redisdata: {}
+  storage: {}
